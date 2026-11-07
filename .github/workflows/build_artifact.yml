@@ -1,0 +1,42 @@
+name: Build
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure CMake (Ninja)
+        shell: cmd
+        run: cmake -S . -B ${{github.workspace}}/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build ${{github.workspace}}/build
+
+      - name: Package zip
+        run: |
+          cd ${{github.workspace}}/build
+          7z a ../build.zip ./*
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build.zip
+          path: ${{github.workspace}}/build.zip
+
+

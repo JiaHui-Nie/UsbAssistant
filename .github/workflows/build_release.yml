@@ -1,8 +1,6 @@
 name: Build
 
 on:
-  push:
-    branches: [ "main" ]
   workflow_dispatch:
 
 permissions:
@@ -34,7 +32,7 @@ jobs:
           tag_name: latest
           name: Latest build
           body: "This is a rolling release of Usb Assistant, compiled from the latest commit on the main branch."
-          files: ${{github.workspace}}/build/UsbAssistant.exe
+          files: ${{github.workspace}}/build/bin/UsbAssistant.exe
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
