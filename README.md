@@ -1,24 +1,27 @@
+<div align="center">
+
 ![图标](res/icon_preview.png)
 
-<h1 align="center" style="line-height:1;">🚀 U 盘助手 (USB assistant)</h1>
-
-# 📕简介
-
-一个用 C++ 和纯 Win32 API 写的 Windows 桌面 U 盘 / 移动硬盘小工具。常驻托盘，自动列出当前的可移动设备并显示容量占用，支持一键安全弹出、查看并解除文件占用，界面用 Direct2D 自绘，跟随系统明暗主题并适配 DPI。
+<h1 style="line-height:1;">🚀 U 盘助手 (USB assistant)</h1>
 
 ![平台](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078D6?logo=windows)
 ![语言](https://img.shields.io/badge/language-C%2B%2B17-00599C?logo=cplusplus)
 ![许可证](https://img.shields.io/badge/license-MIT-green)
 
+<div/>
+
+# 📕简介
+
+一个用 C++ 和纯 Win32 API 写的 Windows 桌面 U 盘 / 移动硬盘小工具。常驻托盘，自动列出当前的可移动设备并显示容量占用，支持一键安全弹出、查看并解除文件占用，界面用 Direct2D 自绘，跟随系统明暗主题并适配 DPI。
+
 ## 📸 界面预览
 
-![主界面](./screenshots/main.png)
-
-![设置](./screenshots/settings.png)
-
-![全部弹出](./screenshots/all_ejected_light.png)
-
-![解除占用](./screenshots/eject_kill_light.png)
+| 名称 | 图片 |
+| --- | --- |
+| 主界面 | ![主界面](./screenshots/main.png) |
+| 设置 | ![设置](./screenshots/settings.png) |
+| 全部弹出 | ![全部弹出](./screenshots/all_ejected_light.png) |
+| 解除占用 | ![解除占用](./screenshots/eject_kill_light.png) |
 
 ## ✨ 功能
 
@@ -79,11 +82,11 @@ cmake --build build
 或使用 MSVC：
 
 ```powershell
-cmake -S . -B build-msvc -G "Visual Studio 17 2022"
-cmake --build build-msvc --config Release
+cmake -S . -B build -G "Visual Studio 17 2022"
+cmake --build build --config Release
 ```
 
-产物：`build/bin/UsbAssistant.exe`（MSVC 下在 `build-msvc/bin/Release/`）。
+产物：`build/bin/UsbAssistant.exe`（MSVC 下在 `build/bin/Release/`）。
 
 ## 🎯 使用
 

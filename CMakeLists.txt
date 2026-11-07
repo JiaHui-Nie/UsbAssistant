@@ -33,7 +33,7 @@ target_compile_definitions(UsbAssistant PRIVATE
 
 if(MSVC)
     target_compile_options(UsbAssistant PRIVATE /W3 /utf-8 /permissive-)
-    target_link_libraries(UsbAssistant PRIVATE d2d1 dwrite dwmapi shell32 shlwapi setupapi cfgmgr32 ole32 user32 gdi32 advapi32 uuid)
+    target_link_libraries(UsbAssistant PRIVATE d2d1 dwrite dwmapi shell32 shlwapi setupapi cfgmgr32 ole32 user32 gdi32 advapi32 uuid gdiplus version)
     set_property(TARGET UsbAssistant PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()
     target_compile_options(UsbAssistant PRIVATE -Wall -Wextra -Wno-unused-parameter -O2)

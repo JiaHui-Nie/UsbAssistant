@@ -1,6 +1,5 @@
 # 构建产物
 build/
-build-msvc/
 cmake-build-*/
 
 # CMake 生成文件

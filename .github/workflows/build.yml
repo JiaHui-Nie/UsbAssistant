@@ -1,0 +1,32 @@
+name: Build
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        run: cmake -S . -B ${{github.workspace}}/build -G "Visual Studio 17 2022"
+
+      - name: Build
+        run: cmake --build ${{github.workspace}}/build --config Release
+
+      - name: Upload release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          body: "This is a rolling release of Usb Assistant, compiled from the latest commit on the main branch."
+          files: ${{github.workspace}}/build/bin/Release/UsbAssistant.exe
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
