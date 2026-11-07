@@ -18,12 +18,12 @@ jobs:
         with:
           arch: x64
 
-      - name: Configure CMake
+      - name: Configure CMake (Ninja)
         shell: cmd
-        run: cmake -S . -B ${{github.workspace}}/build -G "Visual Studio 17 2022"
+        run: cmake -S . -B ${{github.workspace}}/build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build ${{github.workspace}}/build --config Release
+        run: cmake --build ${{github.workspace}}/build
 
       - name: Upload release
         uses: softprops/action-gh-release@v2
