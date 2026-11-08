@@ -23,6 +23,7 @@ struct EjectVolumeTarget {
 };
 
 // 对整个物理设备执行安全弹出：
-// 锁定并卸载其所有分区 -> CM_Request_Device_Eject 逐级移除（失败回退 IOCTL_STORAGE_EJECT_MEDIA）。
+// 锁定并卸载其所有分区 -> CM_Request_Device_Eject 逐级移除
+// -> 失败回退资源管理器「弹出」动词 -> 再失败回退 IOCTL_STORAGE_EJECT_MEDIA。
 EjectOutcome EjectDisk(unsigned int diskNumber, const std::wstring& title,
                        const std::vector<EjectVolumeTarget>& volumes);

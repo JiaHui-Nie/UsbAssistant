@@ -511,6 +511,8 @@ static void DrawToast(ID2D1RenderTarget* rt, ID2D1SolidColorBrush* brush,
 
     brush->SetColor(Alpha(p.toast, 0.97f * opacity));
     rt->FillRoundedRectangle(Round(rect, 10.0f), brush);
+    brush->SetColor(Alpha(p.toastBorder, opacity));
+    rt->DrawRoundedRectangle(Round(rect, 10.0f), brush, 1.0f);
 
     D2D1_COLOR_F dotColor = app.ToastSuccess() ? p.success : p.danger;
     brush->SetColor(Alpha(dotColor, opacity));

@@ -371,13 +371,17 @@ std::vector<DeviceInfo> EnumerateRemovableDevices() {
         ULARGE_INTEGER totalBytes = {};
         ULARGE_INTEGER freeBytes = {};
         ULARGE_INTEGER availableBytes = {};
-        if (!GetDiskFreeSpaceExW(volumeName, &availableBytes, &totalBytes, &freeBytes)) {
-            continue; // 无介质（读卡器空槽）或无法访问
+        bool hasSize =
+            GetDiskFreeSpaceExW(volumeName, &availableBytes, &totalBytes, &freeBytes) != FALSE;
+        if (!hasSize) {
+            // 空读卡器没有介质，不算分区；其余失败（未格式化、Windows 无法识别的
+            // 文件系统等）仍按分区计入，分区数量应以磁盘全部分区为准
+            DWORD error = GetLastError();
+            if (error == ERROR_NOT_READY || error == ERROR_NO_MEDIA_IN_DRIVE) continue;
         }
-        if (totalBytes.QuadPart == 0) continue;
 
-        part.total = totalBytes.QuadPart;
-        part.freeBytes = freeBytes.QuadPart;
+        part.total = hasSize ? totalBytes.QuadPart : 0;
+        part.freeBytes = hasSize ? freeBytes.QuadPart : 0;
 
         wchar_t label[128] = {};
         wchar_t fs[64] = {};
@@ -389,8 +393,11 @@ std::vector<DeviceInfo> EnumerateRemovableDevices() {
             part.name = label;
             part.fs = fs;
         }
-        if (part.name.empty()) part.name = L"本地磁盘";
         if (part.fs.empty()) part.fs = L"未知文件系统";
+        // 无法识别的分区（未格式化 / 非 Windows 文件系统）同样计入分区数量
+        if (part.name.empty()) {
+            part.name = part.fs == L"未知文件系统" ? L"未识别分区" : L"本地磁盘";
+        }
         part.openable = part.letter != 0 && IsOpenableFileSystem(part.fs);
 
         TempVolume temp;

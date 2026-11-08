@@ -1,4 +1,4 @@
-name: Build artifact
+name: Build and Pre-Release
 
 on:
   push:
@@ -28,10 +28,14 @@ jobs:
       - name: Build
         run: cmake --build ${{github.workspace}}/build
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload release
+        uses: softprops/action-gh-release@v2
         with:
-          name: build.zip
-          path: ${{github.workspace}}/build
-
+          tag_name: latest
+          name: Latest build
+          body: "This is a rolling release of Usb Assistant, compiled from the latest commit on the main branch."
+          files: ${{github.workspace}}/build/bin/UsbAssistant.exe
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

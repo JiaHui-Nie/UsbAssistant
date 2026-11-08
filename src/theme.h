@@ -35,6 +35,7 @@ struct Palette {
     D2D1_COLOR_F danger;
     D2D1_COLOR_F success;
     D2D1_COLOR_F toast;
+    D2D1_COLOR_F toastBorder;
     D2D1_COLOR_F onToast;
 };
 

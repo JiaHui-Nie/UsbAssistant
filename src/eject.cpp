@@ -4,6 +4,8 @@
 #include <winioctl.h>
 #include <setupapi.h>
 #include <cfgmgr32.h>
+#include <shlobj.h>
+#include <objbase.h>
 
 #include <algorithm>
 #include <string>
@@ -268,6 +270,79 @@ bool MediaEject(const std::wstring& volumePath, DWORD* error) {
     return ok;
 }
 
+// 判断上下文菜单项是否就是系统自带的「弹出」动词
+bool IsEjectMenuItem(IContextMenu* menu, HMENU popup, int index, UINT command) {
+    wchar_t verb[128] = {};
+    if (SUCCEEDED(menu->GetCommandString(command - 1, GCS_VERBW, nullptr,
+                                         reinterpret_cast<LPSTR>(verb),
+                                         sizeof(verb) / sizeof(verb[0]))) &&
+        _wcsicmp(verb, L"Eject") == 0) {
+        return true;
+    }
+    wchar_t text[128] = {};
+    if (GetMenuStringW(popup, index, text, sizeof(text) / sizeof(text[0]),
+                       MF_BYPOSITION) != 0) {
+        return _wcsicmp(text, L"Eject") == 0 || wcsstr(text, L"弹出") != nullptr;
+    }
+    return false;
+}
+
+// 调用资源管理器右键菜单里的「弹出」动词（与 Shell.Application 的
+// InvokeVerb("Eject") 等价，静默无窗口）。部分设备只接受这条弹出路径，
+// 作为 CM_Request_Device_Eject 失败后的兜底。
+bool ShellEject(const std::vector<EjectVolumeTarget>& volumes) {
+    HRESULT hr =
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) return false;
+
+    bool invoked = false;
+    for (const auto& volume : volumes) {
+        if (invoked || volume.letter == 0) continue;
+        std::wstring root = std::wstring(1, volume.letter) + L":\\";
+
+        PIDLIST_ABSOLUTE pidl = nullptr;
+        if (FAILED(SHParseDisplayName(root.c_str(), nullptr, &pidl, 0, nullptr)) ||
+            !pidl) {
+            continue;
+        }
+
+        IShellFolder* folder = nullptr;
+        LPCITEMIDLIST child = nullptr;
+        if (SUCCEEDED(SHBindToParent(pidl, IID_IShellFolder,
+                                     reinterpret_cast<void**>(&folder), &child))) {
+            IContextMenu* menu = nullptr;
+            if (SUCCEEDED(folder->GetUIObjectOf(nullptr, 1, &child, IID_IContextMenu,
+                                                nullptr,
+                                                reinterpret_cast<void**>(&menu)))) {
+                HMENU popup = CreatePopupMenu();
+                if (popup && SUCCEEDED(menu->QueryContextMenu(
+                                 popup, 0, 1, 0x7FFF, CMF_NORMAL | CMF_EXPLORE))) {
+                    int count = GetMenuItemCount(popup);
+                    for (int index = 0; index < count; ++index) {
+                        UINT command = GetMenuItemID(popup, index);
+                        if (command == static_cast<UINT>(-1) || command < 1) continue;
+                        if (!IsEjectMenuItem(menu, popup, index, command)) continue;
+
+                        CMINVOKECOMMANDINFO info = {};
+                        info.cbSize = sizeof(info);
+                        info.lpVerb = MAKEINTRESOURCEA(command - 1);
+                        info.nShow = SW_SHOWNORMAL;
+                        invoked = SUCCEEDED(menu->InvokeCommand(&info));
+                        break;
+                    }
+                }
+                if (popup) DestroyMenu(popup);
+                menu->Release();
+            }
+            folder->Release();
+        }
+        CoTaskMemFree(pidl);
+    }
+
+    if (SUCCEEDED(hr)) CoUninitialize();
+    return invoked;
+}
+
 // 卷盘符是否仍存在
 bool AnyVolumeLetterPresent(const std::vector<EjectVolumeTarget>& volumes) {
     DWORD drives = GetLogicalDrives();
@@ -440,7 +515,16 @@ EjectOutcome EjectDisk(unsigned int diskNumber, const std::wstring& title,
         return outcome;
     }
 
-    // 3. 回退：直接弹出介质（读卡器、部分 U 盘）
+    // 3. 回退：调用资源管理器右键菜单的「弹出」动词（与 Shell.Application 的
+    //    InvokeVerb("Eject") 等价，静默无窗口），部分设备只接受这条弹出路径
+    if (ShellEject(volumes) && WaitDiskGone(diskNumber, volumes, 4000)) {
+        outcome.status = EjectStatus::Ok;
+        outcome.message = L"已安全弹出" + (title.empty() ? L"设备" : deviceName) +
+                          L"，现在可以拔下设备了。";
+        return outcome;
+    }
+
+    // 4. 回退：直接弹出介质（读卡器、部分 U 盘）
     DWORD mediaError = 0;
     if (MediaEject(volumes.front().path, &mediaError)) {
         if (WaitDiskGone(diskNumber, volumes, 3500)) {

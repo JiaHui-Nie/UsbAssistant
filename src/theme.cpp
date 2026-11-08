@@ -50,8 +50,9 @@ Palette MakePalette(bool dark) {
         p.warn         = Rgb(0xFF9500);
         p.danger       = Rgb(0xFF3B30);
         p.success      = Rgb(0x30D158);
-        p.toast        = Rgb(0x1C1C1E, 0.94f);
-        p.onToast      = Rgb(0xFFFFFF);
+        p.toast        = Rgb(0xFFFFFF, 0.97f);
+        p.toastBorder  = Rgb(0x000000, 0.12f);
+        p.onToast      = Rgb(0x1D1D1F);
     } else {
         p.panel        = Rgb(0x1C1C1E, 0.985f);
         p.panelBorder  = Rgb(0xFFFFFF, 0.12f);
@@ -75,6 +76,7 @@ Palette MakePalette(bool dark) {
         p.danger       = Rgb(0xFF453A);
         p.success      = Rgb(0x32D74B);
         p.toast        = Rgb(0x2C2C2E, 0.94f);
+        p.toastBorder  = Rgb(0xFFFFFF, 0.14f);
         p.onToast      = Rgb(0xF2F2F7);
     }
     return p;

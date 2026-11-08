@@ -1,6 +1,8 @@
 name: Build and Release
 
 on:
+  push:
+    branches: [ "main" ]
   workflow_dispatch:
 
 permissions:
@@ -13,6 +15,38 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect version from commit message
+        id: version
+        shell: pwsh
+        run: |
+          $message = (git log -1 --pretty=%s).Trim()
+          # 支持 "v1.2.3"、"v1.2.3:说明"、"v1.2.3：说明"（半角/全角冒号、有无空格均可）
+          if ($message -match '^v(\d+\.\d+\.\d+)(?=$|[：:\s])') {
+            $version = "v$($Matches[1])"
+            $description = $message.Substring($Matches[0].Length)
+            $description = $description -replace '^[：:]\s*', ''
+            $description = $description.Trim()
+
+            if ($description.Length -gt 0) {
+              $body = "发布版本 $version`n`n$description`n`n自动构建产物（Windows x64），可从下方 Assets 下载 UsbAssistant.exe。"
+            } else {
+              $body = "发布版本 $version`n`n自动构建产物（Windows x64），可从下方 Assets 下载 UsbAssistant.exe。"
+            }
+
+            "release=true" >> $env:GITHUB_OUTPUT
+            "version=$version" >> $env:GITHUB_OUTPUT
+            "body<<BODY_EOF" >> $env:GITHUB_OUTPUT
+            $body >> $env:GITHUB_OUTPUT
+            "BODY_EOF" >> $env:GITHUB_OUTPUT
+            Write-Host "Detected version: $version"
+            Write-Host "Release description: $description"
+          } else {
+            "release=false" >> $env:GITHUB_OUTPUT
+            Write-Host "Commit message is not a vX.Y.Z version, skip release."
+          }
 
       - name: Configure MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
@@ -26,14 +60,20 @@ jobs:
       - name: Build
         run: cmake --build ${{github.workspace}}/build
 
-      - name: Upload release
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build.zip
+          path: ${{github.workspace}}/build
+
+      - name: Publish GitHub release
+        if: steps.version.outputs.release == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest
-          name: Latest build
-          body: "This is a rolling release of Usb Assistant, compiled from the latest commit on the main branch."
+          tag_name: ${{ steps.version.outputs.version }}
+          name: U 盘助手 ${{ steps.version.outputs.version }}
+          body: ${{ steps.version.outputs.body }}
+          generate_release_notes: true
           files: ${{github.workspace}}/build/bin/UsbAssistant.exe
-          prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
