@@ -1,0 +1,252 @@
+// 主界面视图：布局、绘制、命中测试、鼠标/滚轮交互与动画。
+// 不持有业务数据，所有内容通过 Model 注入；语义动作通过 ViewAction 返回。
+#pragma once
+
+#include <windows.h>
+#include <d2d1.h>
+#include <dwrite.h>
+
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include "core/models.h"
+#include "ui/canvas.h"
+#include "ui/text.h"
+#include "ui/theme.h"
+
+namespace usb::ui {
+
+enum class DialogKind { None, ConfirmClose, Busy, Admin };
+
+enum class ActionKind {
+    None,
+    Close,
+    ConfirmExit,
+    CancelDialog,
+    ToggleDontAsk,
+    Eject,
+    Open,
+    Mount,
+    Unmount,
+    ReleaseOccupants,
+    Elevate,
+    DragEnded,
+};
+
+struct ViewAction {
+    ActionKind kind = ActionKind::None;
+    std::size_t device = 0;
+    std::size_t partition = 0;
+};
+
+enum class HitKind {
+    None,
+    Close,
+    Open,
+    Eject,
+    Mount,
+    Unmount,
+    ConfirmOk,
+    ConfirmCancel,
+    ConfirmCheck,
+    BusyCancel,
+    BusyRelease,
+    AdminCancel,
+    AdminElevate,
+    ScrollBar,
+};
+
+struct Hit {
+    HitKind kind = HitKind::None;
+    int device = -1;
+    int partition = -1;
+};
+
+struct PartitionLayout {
+    D2D1_RECT_F row = {};
+    D2D1_RECT_F open_button = {};
+    D2D1_RECT_F mount_button = {};
+    D2D1_RECT_F unmount_button = {};
+    D2D1_RECT_F pill = {};
+};
+
+struct CardLayout {
+    D2D1_RECT_F card = {};
+    D2D1_RECT_F eject_button = {};
+    std::vector<PartitionLayout> partitions;
+};
+
+struct ViewLayout {
+    float window_w = 0.0f;
+    float window_h = 0.0f;
+    D2D1_RECT_F panel = {};
+    D2D1_RECT_F close_button = {};
+    D2D1_RECT_F content_clip = {};
+    float content_top = 0.0f;
+    std::vector<CardLayout> cards;
+    bool scrolling = false;
+    float scroll_max = 0.0f;
+    D2D1_RECT_F scroll_bar = {};
+
+    D2D1_RECT_F confirm_card = {};
+    D2D1_RECT_F confirm_check = {};
+    D2D1_RECT_F confirm_cancel = {};
+    D2D1_RECT_F confirm_ok = {};
+
+    D2D1_RECT_F busy_card = {};
+    D2D1_RECT_F busy_title = {};
+    D2D1_RECT_F busy_list = {};
+    D2D1_RECT_F busy_cancel = {};
+    D2D1_RECT_F busy_release = {};
+    float busy_scroll_max = 0.0f;
+
+    D2D1_RECT_F admin_card = {};
+    D2D1_RECT_F admin_cancel = {};
+    D2D1_RECT_F admin_elevate = {};
+};
+
+class MainView {
+public:
+    struct Model {
+        std::shared_ptr<const std::vector<Device>> devices;
+        std::shared_ptr<const std::vector<Occupant>> occupants;
+        std::uint32_t ejecting_disk = 0;
+        std::uint32_t busy_disk = 0;  // 正在显示占用弹层的磁盘
+        DialogKind dialog = DialogKind::None;
+        std::wstring busy_title;
+        bool busy_scanning = false;
+        bool busy_releasing = false;
+        std::wstring admin_detail;
+        bool confirm_dont_ask = false;
+        int capacity_base = 1024;
+        std::vector<std::wstring> mounted_volumes;
+    };
+
+    MainView() = default;
+    ~MainView();
+    MainView(const MainView&) = delete;
+    MainView& operator=(const MainView&) = delete;
+
+    static constexpr float kShadowPad = 15.0f;
+    static constexpr float kPanelWidth = 372.0f;
+    static constexpr float kPanelRadius = 16.0f;
+
+    void Attach(HWND hwnd) { hwnd_ = hwnd; }
+    void SetPalette(const Palette& palette) { palette_ = palette; }
+    void SetFonts(const Fonts* fonts) { fonts_ = fonts; }
+    void SetDWrite(IDWriteFactory* factory) { dwrite_ = factory; }
+    void SetModel(const Model& model);
+
+    const Model& model() const { return model_; }
+    const ViewLayout& layout() const { return layout_; }
+
+    float content_height() const;
+    float preferred_panel_height(float max_panel_height) const;
+    void Layout(float panel_height, float scale);
+
+    void Paint(Canvas& canvas, float dpi, float window_alpha) const;
+
+    // 动画推进（约 60fps）。返回 true 表示还需要下一帧。
+    bool Tick();
+    bool Animating() const;
+    bool ToastVisible() const { return toast_opacity_ > 0.01f; }
+    void ShowToast(std::wstring text, bool ok);
+    void HideToast();
+    void ResetHover();
+
+    ViewAction OnMouseDown(float x, float y);
+    ViewAction OnMouseUp(float x, float y);
+    ViewAction OnMouseMove(float x, float y);
+    void OnMouseLeave();
+    bool OnWheel(float delta);
+    void CancelInteraction();
+
+    Hit HitTest(float x, float y) const;
+    bool OverInteractive(float x, float y) const;
+    bool OverPanel(float x, float y) const;
+    float scale() const { return scale_; }
+
+private:
+    // 面板阴影是每帧最贵的固定内容（18 层圆角矩形），按窗口尺寸缓存复用。
+    struct ShadowCache {
+        ID2D1Bitmap* bitmap = nullptr;
+        ID2D1RenderTarget* owner = nullptr;
+        int width = 0;
+        int height = 0;
+        float dpi = 0.0f;
+        bool dark = false;
+        void Release();
+    };
+
+    void BuildLayout(float panel_height);
+    void DrawShadow(ID2D1RenderTarget* target,
+                    ID2D1SolidColorBrush* brush, float dpi) const;
+    void PaintHeader(ID2D1RenderTarget* target, ID2D1SolidColorBrush* brush) const;
+    void PaintDeviceCard(ID2D1RenderTarget* target,
+                         ID2D1SolidColorBrush* brush,
+                         const Device& device, std::size_t index,
+                         const CardLayout& card) const;
+    void PaintEmptyState(ID2D1RenderTarget* target,
+                         ID2D1SolidColorBrush* brush) const;
+    void PaintScrollBar(ID2D1RenderTarget* target,
+                        ID2D1SolidColorBrush* brush) const;
+    void PaintToast(ID2D1RenderTarget* target,
+                    ID2D1SolidColorBrush* brush) const;
+    void PaintConfirmDialog(ID2D1RenderTarget* target,
+                            ID2D1SolidColorBrush* brush) const;
+    void PaintBusyDialog(ID2D1RenderTarget* target,
+                         ID2D1SolidColorBrush* brush) const;
+    void PaintAdminDialog(ID2D1RenderTarget* target,
+                          ID2D1SolidColorBrush* brush) const;
+
+    float ScrollThumbHeight() const;
+    D2D1_RECT_F ScrollThumbRect() const;
+    void SetHover(const Hit& hit);
+    void SetScrollTarget(float value);
+    float HoverEject(std::uint32_t disk_number) const;
+    float HoverOpen(wchar_t letter) const;
+    float HoverVolume(const std::wstring& volume_path) const;
+    bool IsManagedMount(const std::wstring& volume_path) const;
+    static bool IsMountable(const Partition& part);
+
+    HWND hwnd_ = nullptr;
+    Palette palette_ = MakePalette(false);
+    const Fonts* fonts_ = nullptr;
+    IDWriteFactory* dwrite_ = nullptr;
+    Model model_;
+    ViewLayout layout_;
+    mutable ShadowCache shadow_;
+
+    float scale_ = 1.0f;
+    float scroll_y_ = 0.0f;
+    float scroll_target_ = 0.0f;
+    float busy_scroll_ = 0.0f;
+    float busy_scroll_target_ = 0.0f;
+    float toast_opacity_ = 0.0f;
+    float toast_target_ = 0.0f;
+    std::wstring toast_text_;
+    bool toast_ok_ = true;
+
+    Hit hovered_;
+    Hit pressed_;
+    bool scroll_hover_ = false;
+    bool scroll_dragging_ = false;
+    float scroll_drag_start_y_ = 0.0f;
+    float scroll_drag_start_target_ = 0.0f;
+    float scroll_grow_ = 0.0f;
+
+    bool dragging_window_ = false;
+    POINT drag_cursor_start_ = {};
+    RECT drag_window_start_ = {};
+
+    std::unordered_map<std::uint32_t, float> hover_eject_;
+    std::unordered_map<wchar_t, float> hover_open_;
+    std::unordered_map<std::wstring, float> hover_volume_;
+    float hover_close_ = 0.0f;
+    float hover_close_target_ = 0.0f;
+};
+
+}  // namespace usb::ui

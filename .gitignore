@@ -1,14 +1,11 @@
 # 构建产物
 build/
+build-*/
 cmake-build-*/
 
-# CMake 生成文件
-CMakeCache.txt
-CMakeFiles/
-cmake_install.cmake
-
-# 运行时生成的配置（含本机窗口位置）
+# 运行时生成
 config.ini
+*.log
 
 # IDE / 编辑器
 .vscode/
@@ -16,6 +13,9 @@ config.ini
 *.user
 *.suo
 *.swp
+
+#临时文件
+.screenshots/
 
 # 系统文件
 Thumbs.db

@@ -10,127 +10,154 @@
 
 </div>
 
-# 📕简介
+一个用 C++20 + 纯 Win32 API + Direct2D/DirectWrite 写的 Windows 桌面 U 盘工具。常驻托盘，自动列出 USB 存储设备与分区，支持安全弹出、查看并解除文件占用；界面自绘、跟随系统明暗主题、适配高 DPI。
 
-一个用 C++ 和纯 Win32 API 写的 Windows 桌面 U 盘 / 移动硬盘小工具。常驻托盘，自动列出当前的可移动设备并显示容量占用，支持一键安全弹出、查看并解除文件占用，界面用 Direct2D 自绘，跟随系统明暗主题并适配 DPI。
+## 界面预览
 
-*该项目由ai生成，人工审核
+> 支持深色模式
 
-## 📸 界面预览
-
-| 名称 | 图片 |
+| 主界面 | 设置 |
 | --- | --- |
-| 主界面（支持明亮/黑暗模式随系统自动切换） | ![主界面](./screenshots/main.png) |
-| 设置（支持明亮/黑暗模式随系统自动切换） | ![设置](./screenshots/settings.png) |
-| 全部弹出 | ![全部弹出](./screenshots/all_ejected_light.png) |
-| 解除占用 | ![解除占用](./screenshots/eject_kill_light.png) |
+| ![主界面](screenshots/main.png) | ![设置](screenshots/settings.png) |
 
-## ✨ 功能
+## 功能
 
-- [x] **设备列表**：自动枚举可移动磁盘（U 盘、移动硬盘、读卡器），显示盘符、卷标、文件系统、总容量 / 剩余空间与占用比例。
-- [x] **安全弹出**：先请求 PnP 移除，失败时回退到介质弹出，并在弹出后校验磁盘是否真正消失；避免「已弹出却提示失败」。
-- [x] **占用检测与解除占用**：枚举系统句柄定位正在使用该磁盘的进程，可一键结束这些进程后再弹出；explorer 不会被结束。
-- [x] **边缘悬浮条**：把窗口拖出屏幕边缘（上 / 下 / 左 / 右）后自动收起成 42×42 的悬浮图标，点击后从对应边缘滑入恢复；判定基于去除阴影后的真实窗体边界，任务栏所在的那条边不参与判定。
-- [x] **托盘常驻**：单击托盘图标显示 / 隐藏主窗口，右键菜单提供「显示窗口 / 设置… / 退出」。
-- [x] **外观**：Direct2D + DirectWrite 圆角卡片、滚动条悬浮加粗、明暗两套配色、淡入淡出与滚动动画、高 DPI 自适应。
-- [x] **便携配置**：设置保存在程序目录的 `config.ini`（不可写时退回 `%APPDATA%\UsbAssistant`）。
-- [ ] 快捷键
+- [x] **设备列表**：只枚举 USB 总线上的物理磁盘，按磁盘聚合分区；显示盘符、卷标、文件系统、总容量/已用/剩余与占用条。
+- [x] **隐藏分区**：可选显示无盘符分区（ESP / MSR / 未挂载），默认隐藏；可分别控制 ESP、MSR 与其他无盘符分区。ESP 等可挂载分区支持「挂载」（分配驱动器号，等同磁盘管理）与「取消挂载」，退出或隐藏时自动撤销本程序分配的盘符。
+- [x] **安全弹出**：PnP 移除 → 介质弹出 → 强制锁定/卸载后重试；明确区分「被占用 / 权限不足 / 已拔出 / 不支持 / 失败」。
+- [x] **占用检测与解除**：枚举系统句柄定位占用进程，可一键结束后再弹出；`explorer.exe` 只关闭相关窗口、绝不结束，系统关键进程一律跳过。
+- [x] **管理员模式**：需要提权的操作统一弹出带 UAC 盾牌的自绘确认框，确认后用 `runas` 启动同一个 exe 的 `--helper` 执行弹出 / 解除占用 / 挂载 / 取消挂载并回传结果；主程序无需重启，已具管理员权限时直接执行。
+- [x] **托盘常驻**：左键显示窗口，右键自绘菜单（显示 / 设置 / 退出）；启动后延迟补注册一次、之后每 15s 检查图标是否仍在，资源管理器重启后自动恢复。Windows 11 可能把新图标放进任务栏溢出区，这是系统行为，可在「设置 → 个性化 → 任务栏 → 其他系统托盘图标」中固定。
+- [x] **边缘悬浮图标**：窗口拖到屏幕工作区边缘后收起为 42px 圆角悬浮图标，点击从对应方向滑入恢复；任务栏所在边不参与判定。
+- [x] **设置**：开机自启动、始终置顶、默认位置、容量进制、关闭按钮功能、无设备自动隐藏、靠边收起、主界面最大高度、刷新间隔、显示无盘符分区（可展开分别控制 ESP / MSR / 其他）。
+- [x] **外观**：Direct2D 圆角卡片、淡入淡出、滚动动画、明暗配色、高 DPI 自适应；窗口/托盘菜单/设置窗口都按所在显示器的工作区定位，多显示器下不会跳回主屏。配置保存在程序目录 `config.ini`，不可写时退回 `%APPDATA%\UsbAssistant`。
+- [x] **单实例**：再次启动会激活已有窗口，不会重复驻留。
 - [ ] 插入u盘自动执行操作
 - [ ] 操作/活动日志
 - [ ] 只对特定u盘开放白名单，默认不挂载/只读，参考[USB放行工具](https://www.52pojie.cn/thread-2122109-1-1.html)
 
-## 🧱 技术栈
+## 目录结构
 
-| 层次 | 方案 |
-| --- | --- |
-| 语言 / 标准 | C++17 |
-| 平台 | Win32 API（无 MFC / Qt / 第三方 UI 库） |
-| 绘制 | Direct2D 1.0（`ID2D1DCRenderTarget` + `UpdateLayeredWindow` 分层窗口）、DirectWrite |
-| 系统集成 | SetupAPI / CfgMgr32（设备枚举与 PnP 移除）、NtQueryObject（占用句柄扫描）、Shell API（托盘、通知、自启动快捷方式） |
-| 构建 | CMake，MinGW-w64（亦可用 MSVC） |
-| 运行时依赖 | 无（MinGW 下静态链接 `libgcc` / `libstdc++` / `winpthread`） |
-
-## 📂 目录结构
-
-```
-.
-├── CMakeLists.txt          # 构建脚本
-├── docs/
-│   └── screenshots/        # README 中的界面截图
-├── res/
-│   ├── app.rc              # 资源脚本（应用图标）
-│   ├── app.ico             # 应用图标（16–256 多尺寸）
-│   └── icon_preview.png    # 图标预览
+```text
+UsbAssistant/
+├── CMakeLists.txt
+├── README.md
+├── ARCHITECTURE.md          # 模块边界、线程模型、弹出状态机
+├── LICENSE
+├── res/                     # 图标与资源脚本
+├── screenshots/             # README 预览图
+├── tests/core_tests.cpp     # 不依赖界面的核心单元测试
 └── src/
-    ├── main.cpp            # 入口、单实例、--autostart
-    ├── app.h / app.cpp     # 窗口、消息循环、拖拽、动画、托盘、边缘悬浮条
-    ├── canvas.cpp          # D2D 渲染目标封装
-    ├── render.cpp          # 全部界面绘制（卡片、按钮、弹层、滚动条）
-    ├── device.cpp          # 可移动设备枚举
-    ├── eject.cpp           # 安全弹出（PnP 移除 / 介质弹出 / 结果校验）
-    ├── occupant.cpp        # 占用进程扫描与结束
-    ├── settings.cpp        # config.ini 读写、开机自启
-    ├── settings_window.cpp # 设置窗口
-    ├── tray_menu.cpp       # 自绘托盘右键菜单
-    ├── theme.cpp           # 明暗主题与配色
-    └── com_ptr.h           # COM 智能指针
+    ├── main.cpp             # 入口：单实例 / --autostart / --helper
+    ├── core/                # 系统逻辑（无 UI 依赖）
+    │   ├── models.h/.cpp    # Device / Partition / Occupant / EjectResult
+    │   ├── text.h/.cpp      # 字符串清洗、容量格式化、版本信息
+    │   ├── settings.h/.cpp  # config.ini、启动快捷方式
+    │   ├── storage.h/.cpp   # SetupAPI / CfgMgr32 / IOCTL 原语
+    │   ├── devices.h/.cpp   # USB 设备与分区枚举
+    │   ├── eject.h/.cpp     # 安全弹出三级流程
+    │   ├── occupants.h/.cpp # 句柄扫描、结束占用、关闭资源管理器窗口
+    │   └── elevation.h/.cpp # 提权助手协议
+    ├── app/
+    │   ├── application.h/.cpp # 业务编排：窗口/托盘/设置/对话框/任务
+    │   ├── post_target.h       # 后台结果的安全回传目标
+    │   └── worker.h/.cpp      # 串行后台任务队列
+    └── ui/
+        ├── theme.h/.cpp         # 明暗配色
+        ├── canvas.h/.cpp        # 分层窗口离屏画布
+        ├── text.h/.cpp          # DirectWrite 字体与文本
+        ├── draw.h/.cpp          # 图形、图标、开关、复选框
+        ├── main_view.h/.cpp     # 主界面 layout / paint / hit-test / 鼠标
+        ├── settings_window.*    # 设置窗口
+        ├── tray_menu.*          # 自绘托盘菜单
+        └── edge_bar.*           # 边缘悬浮条
 ```
 
-## 🔨 构建
+## 构建
 
-运行环境：Windows 10 / 11（`WINVER=0x0A00`）。需要 CMake ≥ 3.20 和一个支持 C++17 的编译器（推荐 MinGW-w64）。
+环境：Windows 10/11、CMake ≥ 3.21、支持 C++20 的编译器。
+
+MinGW-w64（推荐，静态链接，产物无运行时依赖）：
 
 ```powershell
 cmake -S . -B build -G "MinGW Makefiles"
 cmake --build build
 ```
 
-或使用 MSVC：
+MSVC：
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022"
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ```
 
-产物：`build/bin/UsbAssistant.exe`（MSVC 下在 `build/bin/Release/`）。
+运行测试（测试目标默认不编译，需显式开启）：
 
-## 🎯 使用
+```powershell
+cmake -S . -B build -DUSBASSISTANT_BUILD_TESTS=ON
+cmake --build build --config Release
+ctest --test-dir build --output-on-failure
+```
 
-- 直接运行 `UsbAssistant.exe` 即可；再次运行会激活已有窗口而不是重复启动。
-- 命令行参数 `--autostart`：开机自启标记，启动后只驻留托盘、不显示主窗口（由设置中的「开机自启动」自动写入启动文件夹快捷方式）。
-- 主窗口可拖动，拖到屏幕边缘后收起为悬浮条；悬浮条位置与窗体边界对齐，点击后按所在边缘方向滑入。
-- 托盘图标：左键显示 / 隐藏窗口，右键打开菜单。
-- 关闭按钮的行为（退出程序 / 隐藏到托盘）在设置里可选，并可关闭退出确认提示。
+产物：
 
-## ⚙️ 配置文件
+- MinGW：`build/bin/UsbAssistant.exe`
+- MSVC：`build/bin/Release/UsbAssistant.exe`
+- 测试（开启 `USBASSISTANT_BUILD_TESTS` 时）：`build/bin/usbassistant_tests.exe`
 
-`config.ini` 使用 `[General]` 段，首次运行自动保存；也可以在设置窗口中修改。
+## 使用
+
+- 直接运行 `UsbAssistant.exe`；再次运行会激活已有窗口。
+- `--autostart`：开机自启标记，启动后只驻留托盘、不显示主窗口（由设置中的「开机自启动」写入启动文件夹快捷方式）。
+- 主窗口可拖动；开启「靠边收起」后拖到屏幕边缘会变成悬浮条。
+- 托盘左键显示窗口，右键打开菜单。
+- 「关闭」按钮默认**隐藏到托盘**，保证托盘图标常驻；也可在设置中改为「退出程序」，并可关闭退出确认。
+
+## 配置
+
+`config.ini` 位于 exe 同目录；不可写时使用 `%APPDATA%\UsbAssistant\config.ini`。
 
 | 键 | 默认值 | 说明 |
 | --- | --- | --- |
 | `TopMost` | `1` | 窗口始终置顶 |
-| `PosMode` | `0` | `0` 固定在角落，`1` 记住上次位置 |
-| `Corner` | `3` | 角落：`0` 左上、`1` 左下、`2` 右上、`3` 右下 |
-| `RefreshSec` | `3` | 容量数据轮询间隔（秒），`0` 关闭 |
-| `CapacityBase` | `1024` | `1024` Windows 风格，`1000` 硬盘厂商风格 |
-| `CloseAction` | `0` | `0` 退出程序，`1` 隐藏窗口 |
+| `PosMode` | `0` | `0` 固定角落，`1` 记住上次位置 |
+| `Corner` | `3` | `0` 左上、`1` 左下、`2` 右上、`3` 右下 |
+| `RefreshSec` | `3` | 容量轮询间隔（秒），`0` 关闭 |
+| `CapacityBase` | `1024` | `1024` Windows 风格，`1000` 厂商风格 |
+| `CloseAction` | `1` | `0` 退出程序，`1` 隐藏窗口（默认，托盘常驻） |
 | `SkipCloseConfirm` | `0` | `1` 关闭时不再确认 |
-| `EmptyHideSec` | `0` | 无设备时自动隐藏的秒数，`0` 不隐藏 |
-| `EdgeCollapse` | `0` | `1` 允许拖到屏幕边缘收起为悬浮条 |
-| `MainHeight` | `90` | 主界面最大高度占可用高度的百分比（20–100） |
+| `EmptyHideSec` | `0` | 无设备自动隐藏秒数，`0` 不隐藏 |
+| `EdgeCollapse` | `0` | `1` 允许拖到屏幕边缘收起 |
+| `ShowHiddenPartitions` | `0` | `1` 显示无盘符分区（ESP / MSR / 未挂载） |
+| `MainHeight` | `90` | 主界面最大高度（可用高度百分比，20–100） |
 | `HasLastPos` / `LastX` / `LastY` | `0` / `0` / `0` | 上次窗口位置（`PosMode=1` 时使用） |
 
-## 🛠 实现要点
+开机自启动不使用注册表，而是启动文件夹里的 `U盘助手.lnk`。
 
-- **分层窗口 + D2D**：窗口四边预留 15 逻辑像素透明阴影，绘制到 DC 后由 `UpdateLayeredWindow` 合成，因此边缘判定使用内缩后的真实面板矩形。
-- **手动拖拽**：自绘窗口不进入系统移动循环，拖拽由 `SetCapture` + `GetCursorPos` 实现，松开时按最近边缘决定是否收起。
-- **占用扫描**：`NtQuerySystemInformation(SystemExtendedHandleInformation)` 遍历句柄，先复制句柄再查询对象类型 / 名称，并按对象类型索引缓存结果，避免逐句柄查询阻塞。
-- **弹出校验**：磁盘设备节点消失或所有分区盘符消失都视为弹出成功；若失败还会在设备列表刷新后二次确认。
+## 安全弹出流程（简述）
 
-## 🎨 图标许可
+1. `CM_Request_Device_EjectW`：从最上层 USB 节点开始请求移除。
+2. 若被明确否决为「仍有句柄打开」→ 立即进入占用界面，不再做无意义的等待。
+3. 失败时尝试 `IOCTL_STORAGE_EJECT_MEDIA`（读卡器/部分 U 盘）。
+4. 仍未断开则逐个 `FSCTL_LOCK_VOLUME` + `FSCTL_DISMOUNT_VOLUME`，**先关闭自身句柄**，再请求一次 PnP 移除（自身句柄会否决移除）。
+5. 每步都以「磁盘节点消失 或 所有目标盘符消失」为成功标准，超时返回失败。
 
-`res/app.ico` 为本项目自行绘制生成的原创图标（圆角渐变底 + 白色「弹出」符号），不含任何第三方素材，可随本项目自由使用与商用。
+完整状态机与线程模型见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
-## 📄 许可证
+## 诊断日志
 
-本项目采用 MIT 许可证 - 查看 [LICENSE](./LICENSE) 文件了解详情
+- Debug 构建默认开启；Release 构建默认关闭（关闭时不创建文件、不做格式化）。Release 需要临时排查时，设置环境变量 `USBASSISTANT_LOG=1` 后再启动（PowerShell：`$env:USBASSISTANT_LOG='1'; .\UsbAssistant.exe`），`0` 可强制关闭。
+- 位置：优先写在 exe 同目录的 `usbassistant.log`；仅当该目录不可写时才回退到 `%APPDATA%\UsbAssistant\usbassistant.log`。文件第一行会写明本次实际使用的路径与来源。
+- 单文件上限 2 MB，超出后滚动为 `usbassistant.1.log`，最多保留 3 份备份；写入在后台线程完成，不阻塞界面。
+- 每行包含时间、线程、级别与模块，错误码同时给出十六进制值。覆盖：设备/分区枚举与过滤原因、安全弹出的节点选择与每次系统调用结果、占用扫描与释放/排除原因、提权弹窗与 helper 参数及结果、配置加载与关键设置变化。
+- 只记录设备路径、实例 ID、卷 GUID、进程名与 PID 等定位信息，不记录文件内容或用户数据。内容为 UTF-8 文本，可直接附给开发者排查。
+
+## 测试与验证
+
+- 开启 `USBASSISTANT_BUILD_TESTS` 后，`ctest` 覆盖：字符串清洗、容量格式化、配置读写与范围归一化、提权参数编解码、危险设备号的安全返回、无盘符目标处理。
+- 已人工验证：空状态、明暗主题、多设备滚动、设置窗口、托盘菜单、关闭确认、边缘悬浮条收起/恢复、单实例、托盘退出、配置持久化。
+- 设备枚举与真实弹出依赖实际 USB 硬件；本机无 USB 存储设备时只验证了空状态与逻辑分支。建议插入 U 盘/移动硬盘后重点验证：多分区设备、被占用设备、管理员模式弹出、读卡器介质弹出。
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。图标为旧项目自绘原创素材，随本项目一并使用。

@@ -1,35 +1,80 @@
-#include "app.h"
+// 程序入口：
+//   普通启动 -> 托盘助手（单实例）
+//   --autostart -> 静默驻留托盘
+//   --helper    -> UAC 提权助手，完成解除占用 + 弹出后退出
+#include <windows.h>
+#include <shellapi.h>
 
 #include <cwchar>
+#include <memory>
+#include <string>
 
-// 开机自启时命令行带 --autostart，此时不显示主窗口
-static bool HasAutostartFlag() {
-    const wchar_t* cmd = GetCommandLineW();
-    if (!cmd) return false;
-    return wcsstr(cmd, L"--autostart") != nullptr;
+#include "app/application.h"
+#include "core/elevation.h"
+#include "core/log.h"
+
+namespace {
+
+constexpr wchar_t kMutexName[] = L"UsbAssistant_SingleInstance_2026";
+constexpr wchar_t kWindowClass[] = L"UsbAssistantMain";
+
+bool HasArgument(int argc, wchar_t* const* argv, const wchar_t* name) {
+    for (int i = 1; i < argc; ++i) {
+        if (wcscmp(argv[i], name) == 0) return true;
+    }
+    return false;
 }
 
-int WINAPI WinMain(HINSTANCE hinst, HINSTANCE, LPSTR, int) {
-    // 单实例：已有一个进程在运行时，激活它的窗口后直接退出
-    HANDLE mutex = CreateMutexW(nullptr, TRUE, L"UsbAssistant_SingleInstance");
+HWND FindMainWindow() {
+    for (int attempt = 0; attempt < 30; ++attempt) {
+        if (HWND hwnd = FindWindowW(kWindowClass, nullptr)) return hwnd;
+        Sleep(50);
+    }
+    return nullptr;
+}
+
+}  // namespace
+
+int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
+    int argc = 0;
+    wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) return 0;
+
+    usb::HelperRequest helper;
+    if (usb::ParseHelperArguments(argc, argv, &helper)) {
+        LocalFree(argv);
+        usb::log::Init();
+        const int result = usb::RunHelper(helper);
+        usb::log::Shutdown();
+        return result;
+    }
+
+    const bool autostart = HasArgument(argc, argv, L"--autostart");
+    LocalFree(argv);
+
+    HANDLE mutex = CreateMutexW(nullptr, TRUE, kMutexName);
     if (mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
-        HWND existing = nullptr;
-        for (int attempt = 0; attempt < 20 && !existing; ++attempt) {
-            existing = FindWindowW(L"UsbAssistantWindow", nullptr);
-            if (!existing) Sleep(50);
+        if (HWND existing = FindMainWindow()) {
+            PostMessageW(existing, WM_APP + 7, 0, 0);  // kMessageShowMain
         }
-        if (existing) PostMessageW(existing, WM_APP_SHOW_MAIN, 0, 0);
         CloseHandle(mutex);
         return 0;
     }
 
-    App app;
-    if (!app.Init(hinst, HasAutostartFlag())) {
-        MessageBoxW(nullptr, L"初始化失败：无法创建 Direct2D / DirectWrite 环境。",
+    auto application = std::make_unique<usb::app::Application>();
+    usb::log::Init();
+    if (!application->Initialize(instance, autostart)) {
+        usb::log::Shutdown();
+        MessageBoxW(nullptr,
+                    L"初始化失败：无法创建 Direct2D / DirectWrite 环境。",
                     L"U 盘助手", MB_ICONERROR | MB_OK);
+        if (mutex) CloseHandle(mutex);
         return 1;
     }
-    int code = app.Run();
+
+    const int result = application->Run();
+    application.reset();
+    usb::log::Shutdown();
     if (mutex) CloseHandle(mutex);
-    return code;
+    return result;
 }
