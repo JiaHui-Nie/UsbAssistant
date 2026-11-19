@@ -15,6 +15,7 @@
 #include "app/worker.h"
 #include "core/models.h"
 #include "core/settings.h"
+#include "ui/about_window.h"
 #include "ui/canvas.h"
 #include "ui/edge_bar.h"
 #include "ui/main_view.h"
@@ -54,6 +55,9 @@ private:
     void ApplyRefreshTimer();
     void ApplySettings(const Settings& settings);
     void ShowSettings();
+    void ShowAbout();
+    void StartUpdateCheck(bool silent);
+    void ShowUpdateBalloon(const std::wstring& latest_version);
 
     // 设备
     DeviceFilter CurrentFilter() const;
@@ -81,6 +85,9 @@ private:
     void ShowBusyDialog(std::uint32_t disk_number, const std::wstring& title,
                         const std::vector<EjectTarget>& targets);
     void StartOccupantScan();
+    void StartOccupantRefresh();
+    void CheckOccupantsRefresh();
+    void SyncOccupantsRefreshTimer();
     void ReleaseOccupantsAndRetry();
     void ShowElevationPrompt(AdminAction action, const std::wstring& detail,
                              std::uint32_t disk_number,
@@ -129,6 +136,7 @@ private:
     ui::Canvas canvas_;
     ui::MainView view_;
     ui::SettingsWindow settings_window_;
+    ui::AboutWindow about_window_;
     ui::EdgeBar edge_bar_;
 
     ID2D1Factory* d2d_ = nullptr;
@@ -158,6 +166,7 @@ private:
     std::vector<EjectTarget> busy_targets_;
     bool busy_scanning_ = false;
     bool busy_releasing_ = false;
+    int occupants_refresh_ticks_ = 0;
     AdminAction admin_action_ = AdminAction::None;
     std::wstring admin_detail_;
     std::uint32_t admin_disk_ = 0;
@@ -170,11 +179,17 @@ private:
 
     Worker scan_worker_;
     Worker action_worker_;
+    Worker update_worker_;
     std::shared_ptr<PostTarget> post_target_ = std::make_shared<PostTarget>();
     bool scan_in_flight_ = false;
     bool scan_pending_ = false;
     bool action_busy_ = false;
     std::uint64_t action_generation_ = 0;
+
+    // 更新检查：结果回传后只在 generation 匹配时更新界面。
+    bool update_busy_ = false;
+    bool update_silent_ = false;
+    std::uint64_t update_generation_ = 0;
 
     float dpi_ = 96.0f;
     float scale_ = 1.0f;

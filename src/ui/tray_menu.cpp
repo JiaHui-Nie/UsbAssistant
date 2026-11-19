@@ -13,7 +13,7 @@ constexpr float kMenuWidth = 172.0f;
 constexpr float kItemHeight = 34.0f;
 constexpr float kMenuPad = 6.0f;
 constexpr float kMenuGap = 6.0f;
-constexpr int kDangerIndex = 2;
+constexpr int kDangerIndex = 3;
 
 float SystemScale() {
     HDC dc = GetDC(nullptr);
@@ -54,7 +54,7 @@ int TrayMenu::Show(HINSTANCE instance, HWND owner, POINT screen_point,
     hover_ = -1;
     choice_ = -1;
     done_ = false;
-    items_ = {L"显示窗口", L"设置…", L"退出"};
+    items_ = {L"显示窗口", L"设置…", L"关于…", L"退出"};
 
     static bool registered = false;
     if (!registered) {

@@ -10,7 +10,6 @@
 #include <string>
 #include <vector>
 
-#include "core/log.h"
 #include "ui/draw.h"
 
 namespace usb::ui {
@@ -31,8 +30,27 @@ constexpr float kSubToggleHeight = 20.0f;
 constexpr float kChoiceWidth = 132.0f;
 constexpr float kChoiceHeight = 27.0f;
 
+// 命中区域只覆盖控件本身；仅把高度补到至少 28dip，保证触摸可点。
+D2D1_RECT_F ControlHitRect(const D2D1_RECT_F& rect) {
+    constexpr float kMinHitHeight = 28.0f;
+    const float center = (rect.top + rect.bottom) * 0.5f;
+    const float half = std::max((rect.bottom - rect.top) * 0.5f,
+                                kMinHitHeight * 0.5f);
+    return Rect(rect.left, center - half, rect.right, center + half);
+}
+
+// “显示无盘符分区”行的展开箭头：命中只限箭头本身，不再整行触发。
+D2D1_RECT_F ChevronHitRect(const D2D1_RECT_F& row_rect) {
+    constexpr float kHalf = 14.0f;
+    const float center_x = row_rect.right - 16.0f - kToggleWidth - 14.0f;
+    const float center_y = (row_rect.top + row_rect.bottom) * 0.5f;
+    return Rect(center_x - kHalf, center_y - kHalf, center_x + kHalf,
+                center_y + kHalf);
+}
+
 enum Row {
     RowAutoStart = 0,
+    RowAutoCheckUpdates,
     RowTopMost,
     RowPosition,
     RowCapacity,
@@ -66,6 +84,7 @@ struct RowSpec {
 
 constexpr RowSpec kRows[kRowCount] = {
     {L"开机自启动", true},
+    {L"启动时检查更新", true},
     {L"窗口始终置顶", true},
     {L"窗口默认位置", false},
     {L"容量显示风格", false},
@@ -127,6 +146,8 @@ bool RowToggleValue(const Settings& settings, int row) {
             return settings.top_most;
         case RowEdgeCollapse:
             return settings.edge_collapse;
+        case RowAutoCheckUpdates:
+            return settings.auto_check_updates;
         case RowHiddenPartitions:
             return settings.show_hidden_partitions;
         case RowHiddenEsp:
@@ -368,16 +389,10 @@ public:
         // 下拉是在鼠标按下时展开的：先等这次按键松开，再启用“点外面关闭”，
         // 否则初始的抬起事件会立刻把菜单关掉。
         bool armed = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0;
-        RECT popup_rect = {};
-        GetWindowRect(hwnd_, &popup_rect);
-        USB_LOG_DEBUG(L"touch",
-                      L"下拉打开：armed=%d rect=%ld,%ld,%ld,%ld items=%zu",
-                      armed ? 1 : 0, popup_rect.left, popup_rect.top,
-                      popup_rect.right, popup_rect.bottom, items_.size());
         while (!done_) {
             MSG message = {};
-            const DWORD wait = MsgWaitForMultipleObjectsEx(
-                0, nullptr, 40, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            MsgWaitForMultipleObjectsEx(0, nullptr, 40, QS_ALLINPUT,
+                                        MWMO_INPUTAVAILABLE);
             while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
                 if (message.message == WM_QUIT) {
                     PostQuitMessage(static_cast<int>(message.wParam));
@@ -388,8 +403,10 @@ public:
                 DispatchMessageW(&message);
             }
             if (done_) break;
-            if (wait != WAIT_TIMEOUT) continue;
 
+            // 每次循环都检查，而不是只在等待超时时检查：触摸输入会持续产生
+            // WM_POINTERUPDATE（约 8ms 一条），按下期间等待几乎不会超时，
+            // 只在超时时检查会让外部点击永远关不掉菜单。
             const bool down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0 ||
                               (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
             const bool escape = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
@@ -408,9 +425,12 @@ public:
             if (hwnd_) GetWindowRect(hwnd_, &rect);
             const bool inside = hwnd_ && PtInRect(&rect, cursor) != FALSE;
             if ((down && !inside) || (previous_down && !down && !inside)) {
-                USB_LOG_DEBUG(L"touch",
-                              L"下拉关闭：外部点击 inside=%d down=%d armed=%d",
-                              inside ? 1 : 0, down ? 1 : 0, armed ? 1 : 0);
+                if (down) {
+                    outside_click_ = true;
+                    outside_left_ =
+                        (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+                    outside_point_ = cursor;
+                }
                 Finish(-1);
                 break;
             }
@@ -471,9 +491,7 @@ private:
                 }
                 return 0;
             case WM_LBUTTONUP: {
-                const int item = HitItem(GET_Y_LPARAM(lparam));
-                USB_LOG_DEBUG(L"touch", L"下拉抬起：item=%d", item);
-                Finish(item);
+                Finish(HitItem(GET_Y_LPARAM(lparam)));
                 return 0;
             }
             case WM_RBUTTONUP:
@@ -595,6 +613,16 @@ private:
     int choice_ = -1;
     bool done_ = false;
     bool tracking_leave_ = false;
+    // 记录“点击弹层外部”的落点：关闭后由拥有者补发一次按下，避免这次点击
+    // 被菜单的模态循环吞掉。
+    bool outside_click_ = false;
+    bool outside_left_ = false;
+    POINT outside_point_ = {};
+
+   public:
+    bool outside_click() const { return outside_click_; }
+    bool outside_left_button() const { return outside_left_; }
+    POINT outside_click_point() const { return outside_point_; }
 };
 
 }  // namespace
@@ -1037,6 +1065,8 @@ void SettingsWindow::ToggleRow(int row) {
         settings_.top_most = !settings_.top_most;
     } else if (row == RowEdgeCollapse) {
         settings_.edge_collapse = !settings_.edge_collapse;
+    } else if (row == RowAutoCheckUpdates) {
+        settings_.auto_check_updates = !settings_.auto_check_updates;
     } else if (row == RowHiddenPartitions) {
         settings_.show_hidden_partitions = !settings_.show_hidden_partitions;
     } else if (row == RowHiddenEsp) {
@@ -1077,6 +1107,25 @@ void SettingsWindow::ChooseRow(int row) {
     open_row_ = -1;
     menu_open_ = false;
     InvalidateRect(hwnd_, nullptr, FALSE);
+
+    // 菜单打开期间设置窗口会忽略输入，若不补发，关闭菜单的这一下就白点了。
+    // 标题栏拖动需要连续的按下/移动，交给下一次手势；再次点同一个下拉则只关闭。
+    if (popup.outside_click() && popup.outside_left_button()) {
+        POINT point = popup.outside_click_point();
+        ScreenToClient(hwnd_, &point);
+        RECT client = {};
+        GetClientRect(hwnd_, &client);
+        const D2D1_RECT_F choice = ChoiceRect(row);
+        const float dip_x = static_cast<float>(point.x) / scale_;
+        const float dip_y = static_cast<float>(point.y) / scale_;
+        const bool on_current = dip_x >= choice.left && dip_x <= choice.right &&
+                                dip_y >= choice.top && dip_y <= choice.bottom;
+        if (PtInRect(&client, point) && dip_y >= kHeaderHeight &&
+            !on_current) {
+            PostMessageW(hwnd_, WM_LBUTTONDOWN, MK_LBUTTON,
+                         MAKELPARAM(point.x, point.y));
+        }
+    }
     if (index >= 0 && index != current) {
         ApplyChoice(&settings_, row, index);
         NotifyChange();
@@ -1118,23 +1167,7 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
         case WM_PAINT: {
             PAINTSTRUCT paint = {};
             BeginPaint(hwnd, &paint);
-            LARGE_INTEGER start = {};
-            QueryPerformanceCounter(&start);
             Paint();
-            LARGE_INTEGER end = {};
-            QueryPerformanceCounter(&end);
-            if (usb::log::Enabled()) {
-                LARGE_INTEGER frequency = {};
-                QueryPerformanceFrequency(&frequency);
-                const double ms =
-                    frequency.QuadPart > 0
-                        ? (end.QuadPart - start.QuadPart) * 1000.0 /
-                              static_cast<double>(frequency.QuadPart)
-                        : 0.0;
-                if (ms > 8.0) {
-                    USB_LOG_WARN(L"ui", L"设置窗口整窗重绘耗时 %.1f ms", ms);
-                }
-            }
             EndPaint(hwnd, &paint);
             return 0;
         }
@@ -1151,34 +1184,35 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             }
             if (y < kHeaderHeight) {
                 dragging_ = true;
-                drag_moves_ = 0;
                 SetCapture(hwnd);
                 GetCursorPos(&drag_cursor_start_);
                 GetWindowRect(hwnd, &drag_window_start_);
-                USB_LOG_DEBUG(L"touch", L"拖动开始：cursor=%ld,%ld",
-                              drag_cursor_start_.x, drag_cursor_start_.y);
                 return 0;
             }
             const int row = HitRow(x, y);
-            USB_LOG_DEBUG(L"touch",
-                          L"鼠标按下：x=%.0f y=%.0f row=%d menu_open=%d", x, y,
-                          row, menu_open_ ? 1 : 0);
-            if (row >= 0) {
-                if (IsSubRow(row)) {
-                    if (settings_.show_hidden_partitions) ToggleRow(row);
-                } else if (kRows[row].toggle) {
-                    if (row == RowHiddenPartitions &&
-                        !Contains(ToggleRect(row), x, y)) {
-                        expanded_ = !expanded_;
-                        UpdateScrollBounds();
-                        if (expanded_) scroll_ = scroll_max_;
-                        InvalidateRect(hwnd, nullptr, FALSE);
-                    } else {
-                        ToggleRow(row);
-                    }
-                } else {
-                    ChooseRow(row);
+            if (row < 0) return 0;
+
+            if (IsSubRow(row)) {
+                if (settings_.show_hidden_partitions &&
+                    Contains(ControlHitRect(ToggleRect(row)), x, y)) {
+                    ToggleRow(row);
                 }
+                return 0;
+            }
+            if (kRows[row].toggle) {
+                if (Contains(ControlHitRect(ToggleRect(row)), x, y)) {
+                    ToggleRow(row);
+                } else if (row == RowHiddenPartitions &&
+                           Contains(ChevronHitRect(RowRect(row)), x, y)) {
+                    expanded_ = !expanded_;
+                    UpdateScrollBounds();
+                    if (expanded_) scroll_ = scroll_max_;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
+            if (Contains(ControlHitRect(ChoiceRect(row)), x, y)) {
+                ChooseRow(row);
             }
             return 0;
         }
@@ -1187,12 +1221,6 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             if (dragging_) {
                 POINT cursor = {};
                 GetCursorPos(&cursor);
-                ++drag_moves_;
-                if (drag_moves_ <= 400 && (drag_moves_ % 4) == 1) {
-                    USB_LOG_DEBUG(L"touch",
-                                  L"拖动移动 #%d cursor=%ld,%ld", drag_moves_,
-                                  cursor.x, cursor.y);
-                }
                 SetWindowPos(hwnd, nullptr,
                              drag_window_start_.left +
                                  (cursor.x - drag_cursor_start_.x),
@@ -1218,9 +1246,22 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
                 hover_row_ = row;
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
-            const bool interactive =
-                row >= 0 &&
-                (!IsSubRow(row) || settings_.show_hidden_partitions);
+            bool interactive = false;
+            if (row >= 0) {
+                if (IsSubRow(row)) {
+                    interactive =
+                        settings_.show_hidden_partitions &&
+                        Contains(ControlHitRect(ToggleRect(row)), x, y);
+                } else if (kRows[row].toggle) {
+                    interactive =
+                        Contains(ControlHitRect(ToggleRect(row)), x, y) ||
+                        (row == RowHiddenPartitions &&
+                         Contains(ChevronHitRect(RowRect(row)), x, y));
+                } else {
+                    interactive = Contains(ControlHitRect(ChoiceRect(row)), x,
+                                           y);
+                }
+            }
             SetCursor(LoadCursorW(
                 nullptr, (interactive || close) ? IDC_HAND : IDC_ARROW));
             return 0;
@@ -1236,7 +1277,6 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
         case WM_LBUTTONUP:
             if (dragging_) {
                 dragging_ = false;
-                USB_LOG_DEBUG(L"touch", L"拖动结束：up，移动消息=%d", drag_moves_);
                 if (GetCapture() == hwnd) ReleaseCapture();
                 return 0;
             }
@@ -1245,8 +1285,6 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
         case WM_CAPTURECHANGED:
             if (dragging_) {
                 dragging_ = false;
-                USB_LOG_WARN(L"touch",
-                             L"拖动被中断：捕获丢失，移动消息=%d", drag_moves_);
                 tracking_leave_ = false;
                 hover_row_ = -1;
                 close_hover_ = false;
@@ -1310,25 +1348,6 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             if (handler) handler();
             return DefWindowProcW(hwnd, message, wparam, lparam);
         }
-
-        // 临时取证：确认触摸设备上是否收到指针/触摸/手势消息，以及它们与
-        // 鼠标消息的先后关系。不改变任何处理行为，交回 DefWindowProc。
-        case WM_POINTERDOWN:
-        case WM_POINTERUPDATE:
-        case WM_POINTERUP:
-        case WM_TOUCH:
-        case WM_GESTURE:
-            USB_LOG_DEBUG(L"touch", L"原始输入消息 0x%04X wparam=%llu",
-                          message,
-                          static_cast<unsigned long long>(wparam));
-            break;
-
-        // 触摸长按会被系统合成为右键按下；记录它以便区分“点击没反应”的原因。
-        case WM_RBUTTONDOWN:
-        case WM_RBUTTONUP:
-            USB_LOG_DEBUG(L"touch", L"右键消息 0x%04X（触摸长按会合成右键）",
-                          message);
-            break;
 
         default:
             break;

@@ -15,6 +15,10 @@ struct Settings {
     int position_mode = 0;          // 0 = 固定角落，1 = 记住上次位置
     int corner = 3;                 // 0 左上 1 左下 2 右上 3 右下
     int refresh_seconds = 3;        // 0 = 关闭定时刷新
+    // 启动后延迟几秒静默检查一次更新；只在新版本或失败时反馈。
+    bool auto_check_updates = true;
+    // 占用列表后台复检间隔（秒）。只写配置文件，不在设置界面展示。
+    int occupants_refresh_seconds = 1;
     int capacity_base = 1024;       // 1000 = 厂商进制
     int close_action = 1;           // 0 = 退出，1 = 隐藏到托盘（托盘常驻）
     bool skip_close_confirm = false;

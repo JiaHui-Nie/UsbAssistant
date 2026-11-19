@@ -93,6 +93,8 @@ void Settings::Normalize() {
     if (position_mode != 1) position_mode = 0;
     corner = std::clamp(corner, 0, 3);
     refresh_seconds = std::clamp(refresh_seconds, 0, 3600);
+    occupants_refresh_seconds =
+        std::clamp(occupants_refresh_seconds, 1, 60);
     capacity_base = capacity_base == 1000 ? 1000 : 1024;
     close_action = close_action == 1 ? 1 : 0;
     empty_hide_seconds = std::clamp(empty_hide_seconds, 0, 86400);
@@ -110,6 +112,10 @@ Settings SettingsStore::Load() const {
     settings.position_mode = ReadInt(path_, L"PosMode", 0);
     settings.corner = ReadInt(path_, L"Corner", 3);
     settings.refresh_seconds = ReadInt(path_, L"RefreshSec", 3);
+    settings.auto_check_updates =
+        ReadInt(path_, L"AutoCheckUpdates", 1) != 0;
+    settings.occupants_refresh_seconds =
+        ReadInt(path_, L"OccupantsRefreshSec", 1);
     settings.capacity_base = ReadInt(path_, L"CapacityBase", 1024);
     settings.close_action = ReadInt(path_, L"CloseAction", 1);
     settings.skip_close_confirm =
@@ -133,7 +139,7 @@ Settings SettingsStore::Load() const {
     USB_LOG_INFO(L"config",
                  L"加载配置：%s version=%d top_most=%d pos_mode=%d corner=%d "
                  L"refresh=%d close_action=%d hidden=%d esp=%d msr=%d other=%d "
-                 L"edge=%d height=%d",
+                 L"edge=%d height=%d occupants_refresh=%d auto_update=%d",
                  path_.c_str(), config_version, settings.top_most ? 1 : 0,
                  settings.position_mode, settings.corner,
                  settings.refresh_seconds, settings.close_action,
@@ -142,7 +148,9 @@ Settings SettingsStore::Load() const {
                  settings.show_msr_partitions ? 1 : 0,
                  settings.show_other_hidden_partitions ? 1 : 0,
                  settings.edge_collapse ? 1 : 0,
-                 settings.main_height_percent);
+                 settings.main_height_percent,
+                 settings.occupants_refresh_seconds,
+                 settings.auto_check_updates ? 1 : 0);
 
     // v2 起默认“关闭 = 隐藏到托盘”。旧配置没有版本号，迁移一次，
     // 让已经安装过的用户也能保持托盘常驻；迁移后用户仍可在设置中改回退出。
@@ -160,6 +168,12 @@ bool SettingsStore::Save(const Settings& settings) const {
     ok = WriteInt(path_, L"PosMode", settings.position_mode) && ok;
     ok = WriteInt(path_, L"Corner", settings.corner) && ok;
     ok = WriteInt(path_, L"RefreshSec", settings.refresh_seconds) && ok;
+    ok = WriteInt(path_, L"AutoCheckUpdates",
+                  settings.auto_check_updates ? 1 : 0) &&
+         ok;
+    ok = WriteInt(path_, L"OccupantsRefreshSec",
+                  settings.occupants_refresh_seconds) &&
+         ok;
     ok = WriteInt(path_, L"CapacityBase", settings.capacity_base) && ok;
     ok = WriteInt(path_, L"CloseAction", settings.close_action) && ok;
     ok = WriteInt(path_, L"SkipCloseConfirm",

@@ -22,6 +22,8 @@
 #include "core/occupants.h"
 #include "core/storage.h"
 #include "core/text.h"
+#include "core/update.h"
+#include "core/version.h"
 #include "ui/draw.h"
 
 namespace usb::app {
@@ -37,6 +39,7 @@ constexpr UINT kMessageOccupantsDone = WM_APP + 4;
 constexpr UINT kMessageHelperDone = WM_APP + 5;
 constexpr UINT kMessageShellNotify = WM_APP + 6;
 constexpr UINT kMessageShowMain = WM_APP + 7;
+constexpr UINT kMessageUpdateDone = WM_APP + 8;
 
 constexpr UINT_PTR kTimerAnim = 1;
 constexpr UINT_PTR kTimerScan = 2;
@@ -46,6 +49,8 @@ constexpr UINT_PTR kTimerTray = 5;
 constexpr UINT_PTR kTimerToast = 6;
 constexpr UINT_PTR kTimerAction = 7;
 constexpr UINT_PTR kTimerTrayHealth = 8;
+constexpr UINT_PTR kTimerOccupantsRefresh = 9;
+constexpr UINT_PTR kTimerUpdateAuto = 10;
 
 constexpr int kActionTimeoutEjectMs = 30000;
 constexpr int kActionTimeoutScanMs = 15000;
@@ -72,6 +77,8 @@ struct EjectPayload {
 struct OccupantsPayload {
     std::uint64_t generation = 0;
     std::shared_ptr<const std::vector<Occupant>> occupants;
+    bool refresh = false;   // 占用列表的后台复检，不显示“扫描中”
+    bool complete = false;  // 扫描是否完整（失败时保留现有列表）
 };
 
 struct HelperPayload {
@@ -84,6 +91,11 @@ struct HelperPayload {
     std::wstring volume_path;
     wchar_t letter = 0;
     std::wstring root;
+};
+
+struct UpdatePayload {
+    std::uint64_t generation = 0;
+    UpdateCheckResult result;
 };
 
 template <typename T>
@@ -197,6 +209,15 @@ std::vector<wchar_t> LettersFromTargets(
     return letters;
 }
 
+// 后台复检结果与当前列表是否一致：只比 PID，避免无意义的整窗重绘。
+std::vector<DWORD> OccupantPids(const std::vector<Occupant>& occupants) {
+    std::vector<DWORD> pids;
+    pids.reserve(occupants.size());
+    for (const auto& occupant : occupants) pids.push_back(occupant.pid);
+    std::sort(pids.begin(), pids.end());
+    return pids;
+}
+
 std::vector<EjectTarget> TargetsFromLetters(
     const std::vector<wchar_t>& letters) {
     std::vector<EjectTarget> targets;
@@ -243,10 +264,12 @@ Application::~Application() {
     // 正在等待设备消失。任务只访问 core 与 PostTarget，不访问 Application。
     scan_worker_.Stop(false);
     action_worker_.Stop(false);
+    update_worker_.Stop(false);
 
     if (hwnd_ && IsWindow(hwnd_)) DestroyWindow(hwnd_);
     UnmountManagedVolumes(PartitionKind::Normal, true);
     settings_window_.Close();
+    about_window_.Close();
     edge_bar_.Destroy();
     if (canvas_.valid()) canvas_.Release();
     ui::ReleaseFonts(&fonts_);
@@ -277,11 +300,8 @@ bool Application::Initialize(HINSTANCE instance, bool start_hidden) {
     scale_ = dpi_ / 96.0f;
 
     settings_ = store_.Load();
-    USB_LOG_INFO(L"app",
-                 L"启动：elevated=%d start_hidden=%d dpi=%.0f digitizer=0x%X touches=%d",
-                 IsProcessElevated() ? 1 : 0, start_hidden ? 1 : 0, dpi_,
-                 GetSystemMetrics(SM_DIGITIZER),
-                 GetSystemMetrics(SM_MAXIMUMTOUCHES));
+    USB_LOG_INFO(L"app", L"启动：elevated=%d start_hidden=%d dpi=%.0f",
+                 IsProcessElevated() ? 1 : 0, start_hidden ? 1 : 0, dpi_);
     palette_ = ui::MakePalette(ui::IsSystemDarkMode());
 
     const GUID d2d1_factory_iid = {
@@ -373,6 +393,7 @@ bool Application::Initialize(HINSTANCE instance, bool start_hidden) {
 
     scan_worker_.Start();
     action_worker_.Start();
+    update_worker_.Start();
 
     SHChangeNotifyEntry notify_entry = {};
     notify_entry.pidl = nullptr;
@@ -404,6 +425,10 @@ bool Application::Initialize(HINSTANCE instance, bool start_hidden) {
     SetTimer(hwnd_, kTimerTray, 1500, nullptr);
 
     RequestScan(0);
+    // 启动后延迟几秒再静默检查更新，避开启动期的扫描与绘制。
+    if (settings_.auto_check_updates) {
+        SetTimer(hwnd_, kTimerUpdateAuto, 5000, nullptr);
+    }
     return true;
 }
 
@@ -476,6 +501,12 @@ void Application::RecalculateWindow() {
     const RECT work_area = WorkAreaForWindow(hwnd_);
     int left = current.left;
     int top = current.top;
+    // 左下 / 右下定位时窗口应贴住底边：高度变化以底边为锚点，否则内容变矮时
+    // 空出的高度会留在窗口下方，表现为整窗向上跑。
+    if (settings_.position_mode == 0 &&
+        (settings_.corner == 1 || settings_.corner == 3)) {
+        top = current.bottom - height_px;
+    }
     if (left + width_px > work_area.right - 8) {
         left = work_area.right - 8 - width_px;
     }
@@ -551,6 +582,7 @@ void Application::UpdateTheme() {
     palette_ = ui::MakePalette(dark);
     view_.SetPalette(palette_);
     settings_window_.SetPalette(palette_);
+    about_window_.SetPalette(palette_);
     edge_bar_.SetTheme(dark);
     PaintNow();
 }
@@ -562,6 +594,7 @@ void Application::ApplyTopMost() {
     SetWindowPos(hwnd_, settings_.top_most ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0,
                  0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     settings_window_.SetTopMost(settings_.top_most);
+    about_window_.SetTopMost(settings_.top_most);
 }
 
 void Application::ApplyRefreshTimer() {
@@ -616,6 +649,7 @@ void Application::ApplySettings(const Settings& settings) {
 
     ApplyTopMost();
     ApplyRefreshTimer();
+    if (!settings_.auto_check_updates) KillTimer(hwnd_, kTimerUpdateAuto);
 
     if (position_changed) ApplyWindowPosition();
     store_.Save(settings_);
@@ -638,6 +672,58 @@ void Application::ShowSettings() {
         instance_, hwnd_, d2d_, dwrite_, &fonts_, palette_, settings_,
         [this](const Settings& settings) { ApplySettings(settings); });
     ApplyTopMost();
+}
+
+void Application::ShowAbout() {
+    // 重新打开时让任何在途结果失效，避免旧结果落到新窗口上。
+    ++update_generation_;
+    update_busy_ = false;
+    about_window_.Open(
+        instance_, hwnd_, d2d_, dwrite_, &fonts_, palette_, kAboutVersion,
+        [this]() { StartUpdateCheck(false); },
+        [this]() {
+            ++update_generation_;
+            update_busy_ = false;
+        });
+    ApplyTopMost();
+}
+
+void Application::StartUpdateCheck(bool silent) {
+    if (!hwnd_) return;
+    if (update_busy_) return;
+    update_busy_ = true;
+    update_silent_ = silent;
+    const std::uint64_t generation = ++update_generation_;
+    const std::shared_ptr<PostTarget> target = post_target_;
+    USB_LOG_INFO(L"update",
+                 L"开始检查更新：current=%s silent=%d dev=%d",
+                 kAppVersion, silent ? 1 : 0, kDevBuild ? 1 : 0);
+    update_worker_.Post([target, generation]() {
+        auto payload = std::make_unique<UpdatePayload>();
+        payload->generation = generation;
+        payload->result = CheckLatestRelease(kAppVersion);
+        PostPayload(target, kMessageUpdateDone, std::move(payload));
+    });
+}
+
+void Application::ShowUpdateBalloon(const std::wstring& latest_version) {
+    if (!hwnd_ || !tray_registered_) return;
+    NOTIFYICONDATAW data = {};
+    data.cbSize = sizeof(data);
+    data.hWnd = hwnd_;
+    data.uID = 1;
+    data.uFlags = NIF_INFO;
+    data.dwInfoFlags = NIIF_INFO;
+    const std::wstring title = L"发现新版本 v" + latest_version;
+    const std::wstring text =
+        L"打开托盘菜单中的「关于」即可查看并前往下载。";
+    std::copy_n(title.begin(),
+                std::min(title.size(), std::size(data.szInfoTitle) - 1),
+                data.szInfoTitle);
+    std::copy_n(text.begin(),
+                std::min(text.size(), std::size(data.szInfo) - 1),
+                data.szInfo);
+    Shell_NotifyIconW(NIM_MODIFY, &data);
 }
 
 // ---------------------------------------------------------------------------
@@ -1015,6 +1101,7 @@ void Application::CloseDialog() {
     }
 
     dialog_ = ui::DialogKind::None;
+    if (hwnd_) KillTimer(hwnd_, kTimerOccupantsRefresh);
     occupants_ = std::make_shared<const std::vector<Occupant>>();
     busy_title_.clear();
     busy_targets_.clear();
@@ -1101,6 +1188,8 @@ void Application::ShowBusyDialog(std::uint32_t disk_number,
                                  const std::wstring& title,
                                  const std::vector<EjectTarget>& targets) {
     dialog_ = ui::DialogKind::Busy;
+    if (hwnd_) KillTimer(hwnd_, kTimerOccupantsRefresh);
+    occupants_refresh_ticks_ = 0;
     busy_disk_ = disk_number;
     busy_title_ = title;
     busy_targets_ = targets;
@@ -1133,9 +1222,57 @@ void Application::StartOccupantScan() {
         auto payload = std::make_unique<OccupantsPayload>();
         payload->generation = generation;
         payload->occupants = std::make_shared<const std::vector<Occupant>>(
-            FindOccupants(letters));
+            FindOccupants(letters, &payload->complete));
         PostPayload(target, kMessageOccupantsDone, std::move(payload));
     });
+}
+
+void Application::CheckOccupantsRefresh() {
+    if (!hwnd_ || dialog_ != ui::DialogKind::Busy || action_busy_ ||
+        busy_scanning_ || busy_releasing_ || !occupants_ ||
+        occupants_->empty()) {
+        return;
+    }
+    ++occupants_refresh_ticks_;
+    // 每秒只做便宜的存活检查；有进程退出（或每 5 拍）才做一次完整句柄扫描。
+    // 整扫实测约 120ms，不能按 1 秒直接整扫。
+    const bool periodic = (occupants_refresh_ticks_ % 5) == 0;
+    if (!periodic && OccupantsStillAlive(*occupants_)) return;
+    StartOccupantRefresh();
+}
+
+void Application::StartOccupantRefresh() {
+    if (!hwnd_ || dialog_ != ui::DialogKind::Busy || action_busy_ ||
+        busy_scanning_ || busy_releasing_) {
+        return;
+    }
+    const std::vector<wchar_t> letters = LettersFromTargets(busy_targets_);
+    if (letters.empty()) return;
+
+    const std::uint64_t generation = ++action_generation_;
+    const std::shared_ptr<PostTarget> target = post_target_;
+    action_worker_.Post([target, generation, letters]() {
+        auto payload = std::make_unique<OccupantsPayload>();
+        payload->generation = generation;
+        payload->refresh = true;
+        payload->occupants = std::make_shared<const std::vector<Occupant>>(
+            FindOccupants(letters, &payload->complete));
+        PostPayload(target, kMessageOccupantsDone, std::move(payload));
+    });
+}
+
+// 只有确实有占用条目展示时才做后台复检，避免无意义的后台扫描。
+void Application::SyncOccupantsRefreshTimer() {
+    if (!hwnd_) return;
+    const bool active = dialog_ == ui::DialogKind::Busy && occupants_ &&
+                        !occupants_->empty() && !busy_releasing_;
+    if (!active) {
+        KillTimer(hwnd_, kTimerOccupantsRefresh);
+        return;
+    }
+    const int seconds = std::max(1, settings_.occupants_refresh_seconds);
+    SetTimer(hwnd_, kTimerOccupantsRefresh,
+             static_cast<UINT>(seconds) * 1000, nullptr);
 }
 
 void Application::ReleaseOccupantsAndRetry() {
@@ -1162,6 +1299,7 @@ void Application::ReleaseOccupantsAndRetry() {
 
     busy_releasing_ = true;
     action_busy_ = true;
+    KillTimer(hwnd_, kTimerOccupantsRefresh);
     SetTimer(hwnd_, kTimerAction, kActionTimeoutReleaseMs, nullptr);
 
     RebuildModel();
@@ -1475,6 +1613,8 @@ void Application::ShowTrayMenu() {
     } else if (choice == 1) {
         ShowSettings();
     } else if (choice == 2) {
+        ShowAbout();
+    } else if (choice == 3) {
         DestroyWindow(hwnd_);
     }
 }
@@ -1799,6 +1939,13 @@ void Application::OnTimer(UINT_PTR timer) {
         case kTimerPoll:
             StartScan();
             break;
+        case kTimerOccupantsRefresh:
+            CheckOccupantsRefresh();
+            break;
+        case kTimerUpdateAuto:
+            KillTimer(hwnd_, kTimerUpdateAuto);
+            if (settings_.auto_check_updates) StartUpdateCheck(true);
+            break;
         case kTimerEmptyHide:
             KillTimer(hwnd_, kTimerEmptyHide);
             empty_hide_armed_ = false;
@@ -2064,6 +2211,23 @@ LRESULT Application::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             if (!payload) return 0;
             if (payload->generation != action_generation_) return 0;
 
+            // 后台复检：保留“扫描中”状态不动，只在列表真的变化时刷新一次，
+            // 且扫描失败时不清空现有条目，避免闪烁和误清仍在运行的进程。
+            if (payload->refresh) {
+                if (dialog_ != ui::DialogKind::Busy || busy_releasing_) return 0;
+                if (!payload->complete) return 0;
+                if (OccupantPids(*occupants_) ==
+                    OccupantPids(*payload->occupants)) {
+                    return 0;
+                }
+                occupants_ = std::move(payload->occupants);
+                RebuildModel();
+                StartAnimation();
+                PaintNow();
+                SyncOccupantsRefreshTimer();
+                return 0;
+            }
+
             KillTimer(hwnd_, kTimerAction);
             action_busy_ = false;
             busy_scanning_ = false;
@@ -2072,6 +2236,33 @@ LRESULT Application::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
                 RebuildModel();
                 StartAnimation();
                 PaintNow();
+                SyncOccupantsRefreshTimer();
+            }
+            return 0;
+        }
+
+        case kMessageUpdateDone: {
+            auto payload = TakePayload<UpdatePayload>(lparam);
+            if (!payload) return 0;
+            if (payload->generation != update_generation_) return 0;
+            update_busy_ = false;
+            const UpdateCheckResult& result = payload->result;
+            USB_LOG_INFO(L"update", L"更新检查结果：status=%d latest=%s",
+                         static_cast<int>(result.status),
+                         result.latest_version.c_str());
+
+            if (kDebugBuild) {
+                // 开发版：每次检查都必须让用户看到结果（含启动自动检查）。
+                if (!about_window_.IsOpen()) ShowAbout();
+                about_window_.SetUpdateResult(result);
+                return 0;
+            }
+
+            if (about_window_.IsOpen()) about_window_.SetUpdateResult(result);
+            // 启动时的静默检查只在发现新版本时提示；失败与已是最新都不打扰。
+            if (update_silent_ &&
+                result.status == UpdateCheckResult::Status::UpdateAvailable) {
+                ShowUpdateBalloon(result.latest_version);
             }
             return 0;
         }
@@ -2272,6 +2463,7 @@ LRESULT Application::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             KillTimer(hwnd_, kTimerTrayHealth);
             KillTimer(hwnd_, kTimerToast);
             KillTimer(hwnd_, kTimerAction);
+            KillTimer(hwnd_, kTimerUpdateAuto);
             SaveSettings();
             UnmountManagedVolumes(PartitionKind::Normal, true);
             RemoveTrayIcon();
@@ -2280,6 +2472,7 @@ LRESULT Application::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
                 shell_notify_id_ = 0;
             }
             settings_window_.Close();
+            about_window_.Close();
             edge_bar_.Destroy();
             edge_collapsed_ = false;
             {

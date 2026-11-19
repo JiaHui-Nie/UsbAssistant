@@ -236,7 +236,9 @@ std::wstring VolumePrefix(const std::wstring& object) {
 
 }  // namespace
 
-std::vector<Occupant> FindOccupants(const std::vector<wchar_t>& letters) {
+std::vector<Occupant> FindOccupants(const std::vector<wchar_t>& letters,
+                                    bool* complete) {
+    if (complete) *complete = false;
     ResolveNtdll();
     if (!g_query_system_information || !g_query_object) {
         USB_LOG_WARN(L"occupants", L"句柄扫描不可用（ntdll 查询函数缺失）");
@@ -373,12 +375,34 @@ std::vector<Occupant> FindOccupants(const std::vector<wchar_t>& letters) {
 
     USB_LOG_INFO(L"occupants", L"句柄扫描完成：占用进程数=%zu",
                  occupants.size());
+    if (complete) *complete = true;
 
     std::sort(occupants.begin(), occupants.end(),
               [](const Occupant& left, const Occupant& right) {
                   return _wcsicmp(left.name.c_str(), right.name.c_str()) < 0;
               });
     return occupants;
+}
+
+bool OccupantsStillAlive(const std::vector<Occupant>& occupants) {
+    for (const auto& occupant : occupants) {
+        if (occupant.pid == 0) continue;
+        HANDLE process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                                     FALSE, occupant.pid);
+        if (!process) {
+            // 打不开不代表已退出（受保护进程会拒绝访问），保守视为存活；
+            // 但参数无效/找不到说明 PID 已经不存在。
+            const DWORD error = GetLastError();
+            if (error == ERROR_INVALID_PARAMETER || error == ERROR_NOT_FOUND) {
+                return false;
+            }
+            continue;
+        }
+        const DWORD state = WaitForSingleObject(process, 0);
+        CloseHandle(process);
+        if (state == WAIT_OBJECT_0) return false;
+    }
+    return true;
 }
 
 ReleaseReport ReleaseOccupants(const std::vector<DWORD>& pids,

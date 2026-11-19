@@ -3,6 +3,7 @@
 
 #include <cstdio>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "core/devices.h"
@@ -13,6 +14,8 @@
 #include "core/settings.h"
 #include "core/storage.h"
 #include "core/text.h"
+#include "core/update.h"
+#include "core/version.h"
 
 namespace {
 
@@ -77,6 +80,8 @@ void TestText() {
 
 void TestSettings() {
     CHECK(usb::Settings().close_action == 1);  // 默认关闭 = 隐藏到托盘
+    CHECK(usb::Settings().auto_check_updates);
+    CHECK_EQ(std::to_wstring(usb::Settings().occupants_refresh_seconds), L"1");
     CHECK(usb::Settings().show_esp_partitions);
     CHECK(usb::Settings().show_msr_partitions);
     CHECK(usb::Settings().show_other_hidden_partitions);
@@ -88,7 +93,9 @@ void TestSettings() {
     settings.main_height_percent = 5;
     settings.close_action = 3;
     settings.refresh_seconds = -4;
+    settings.occupants_refresh_seconds = 0;
     settings.Normalize();
+    CHECK_EQ(std::to_wstring(settings.occupants_refresh_seconds), L"1");
     CHECK_EQ(std::to_wstring(settings.position_mode), L"0");
     CHECK_EQ(std::to_wstring(settings.corner), L"3");
     CHECK_EQ(std::to_wstring(settings.capacity_base), L"1024");
@@ -101,6 +108,7 @@ void TestSettings() {
     settings.top_most = false;
     settings.corner = 1;
     settings.refresh_seconds = 8;
+    settings.auto_check_updates = false;
     settings.capacity_base = 1000;
     settings.close_action = 1;
     settings.skip_close_confirm = true;
@@ -111,6 +119,7 @@ void TestSettings() {
     settings.show_msr_partitions = false;
     settings.show_other_hidden_partitions = true;
     settings.main_height_percent = 55;
+    settings.occupants_refresh_seconds = 5;
     settings.has_last_position = true;
     settings.last_x = -120;
     settings.last_y = 240;
@@ -125,6 +134,7 @@ void TestSettings() {
         CHECK(loaded.top_most == false);
         CHECK_EQ(std::to_wstring(loaded.corner), L"1");
         CHECK_EQ(std::to_wstring(loaded.refresh_seconds), L"8");
+        CHECK(!loaded.auto_check_updates);
         CHECK_EQ(std::to_wstring(loaded.capacity_base), L"1000");
         CHECK_EQ(std::to_wstring(loaded.close_action), L"1");
         CHECK(loaded.skip_close_confirm);
@@ -135,6 +145,7 @@ void TestSettings() {
         CHECK(!loaded.show_msr_partitions);
         CHECK(loaded.show_other_hidden_partitions);
         CHECK_EQ(std::to_wstring(loaded.main_height_percent), L"55");
+        CHECK_EQ(std::to_wstring(loaded.occupants_refresh_seconds), L"5");
         CHECK(loaded.has_last_position);
         CHECK_EQ(std::to_wstring(loaded.last_x), L"-120");
         CHECK_EQ(std::to_wstring(loaded.last_y), L"240");
@@ -147,7 +158,12 @@ void TestSettings() {
                                migration_path.c_str());
     {
         usb::SettingsStore store(migration_path);
-        CHECK(store.Load().close_action == 1);
+        const usb::Settings legacy = store.Load();
+        CHECK(legacy.close_action == 1);
+        // 旧配置没有 OccupantsRefreshSec，必须按默认 1 秒加载。
+        CHECK_EQ(std::to_wstring(legacy.occupants_refresh_seconds), L"1");
+        // 旧配置没有 AutoCheckUpdates，按默认开启加载。
+        CHECK(legacy.auto_check_updates);
         CHECK(GetPrivateProfileIntW(L"General", L"ConfigVersion", 0,
                                     migration_path.c_str()) == 2);
         WritePrivateProfileStringW(L"General", L"CloseAction", L"0",
@@ -292,6 +308,68 @@ void TestLogFormat() {
              L"\\\\?\\Volume{0}\\\\");
 }
 
+void TestVersionAndUpdate() {
+    using namespace usb;
+    CHECK_EQ(NormalizeVersion(L" v1.2.3 "), L"1.2.3");
+    CHECK_EQ(NormalizeVersion(L"V2.0"), L"2.0");
+    CHECK_EQ(NormalizeVersion(L"1.0.0"), L"1.0.0");
+
+    CHECK(CompareVersions(L"1.2.3", L"v1.2.3") == 0);
+    CHECK(CompareVersions(L"1.2.3", L"1.2.4") < 0);
+    CHECK(CompareVersions(L"1.10.0", L"1.9.9") > 0);
+    CHECK(CompareVersions(L"2.0", L"2.0.0") == 0);
+    CHECK(CompareVersions(L"1.2.3", L"1.2.3-beta") == 0);
+    CHECK(CompareVersions(L"abc", L"1.0.0") == 0);  // 无法比较时按相等处理
+
+    const std::string json =
+        R"({"tag_name":"v1.4.0","html_url":)"
+        R"("https://github.com/JiaHui-Nie/UsbAssistant/releases/tag/v1.4.0"})";
+    std::wstring tag;
+    std::wstring url;
+    std::wstring error;
+    CHECK(ParseLatestRelease(json, &tag, &url, &error));
+    CHECK_EQ(tag, L"v1.4.0");
+    CHECK_EQ(url,
+             L"https://github.com/JiaHui-Nie/UsbAssistant/releases/tag/v1.4.0");
+
+    CHECK(!ParseLatestRelease(R"({"message":"Not Found"})", &tag, &url,
+                              &error));
+    CHECK(!ParseLatestRelease(
+        R"({"tag_name":"","html_url":"https://github.com/x/y"})", &tag, &url,
+        &error));
+    CHECK(!ParseLatestRelease(
+        R"({"tag_name":"v1.0.0","html_url":"file:///etc/passwd"})", &tag,
+        &url, &error));
+    CHECK(!ParseLatestRelease(R"({"tag_name":"v1.0.0"})", &tag, &url, &error));
+
+    CHECK(!std::wstring(kAppVersion).empty());
+#if defined(USBASSISTANT_DEBUG_BUILD)
+    // 关于界面：Debug 只显示 dev。
+    CHECK_EQ(std::wstring(kAboutVersion), L"dev");
+#else
+    // 关于界面：Release 只显示纯数字版本号。
+    const std::wstring about_version = kAboutVersion;
+    CHECK(about_version.find(L'v') == std::wstring::npos);
+    CHECK(about_version.find(L'-') == std::wstring::npos);
+#endif
+}
+
+void TestOccupantLiveness() {
+    // Occupant 只可移动，测试里用 vector 承载。
+    std::vector<usb::Occupant> alive;
+    usb::Occupant self;
+    self.pid = GetCurrentProcessId();
+    alive.push_back(std::move(self));
+    CHECK(usb::OccupantsStillAlive(alive));
+    CHECK(usb::OccupantsStillAlive(std::vector<usb::Occupant>()));
+
+    std::vector<usb::Occupant> missing;
+    usb::Occupant gone;
+    gone.pid = 0xFFFFFFF0u;
+    missing.push_back(std::move(gone));
+    CHECK(!usb::OccupantsStillAlive(missing));
+}
+
 }  // namespace
 
 int main() {
@@ -300,6 +378,8 @@ int main() {
     TestStorage();
     TestHelperArguments();
     TestLogFormat();
+    TestVersionAndUpdate();
+    TestOccupantLiveness();
     TestDevicesSmoke();
     TestEjectSafety();
 

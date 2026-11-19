@@ -16,14 +16,22 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # 需要完整 tag 历史：CMake 用 git describe 推导版本，
+          # tag 构建得到正式版本号，分支构建自动标记为开发版本。
+          fetch-depth: 0
 
       - name: Configure MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
+      - name: Show version source
+        shell: bash
+        run: git describe --tags --always --dirty --match "v*"
+
       - name: Configure CMake
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DUSBASSISTANT_BUILD_TESTS=ON
 
       - name: Build
         run: cmake --build build
@@ -35,14 +43,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: UsbAssistant-Windows-x64
-          path: build/bin/UsbAssistant.exe
+          path: build/bin/Release/UsbAssistant.exe
           if-no-files-found: error
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: build/bin/UsbAssistant.exe
+          files: build/bin/Release/UsbAssistant.exe
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

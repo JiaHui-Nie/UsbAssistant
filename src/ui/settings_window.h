@@ -91,7 +91,6 @@ private:
     int open_row_ = -1;
     bool tracking_leave_ = false;
     bool dragging_ = false;
-    int drag_moves_ = 0;
     POINT drag_cursor_start_ = {};
     RECT drag_window_start_ = {};
 };

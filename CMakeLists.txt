@@ -1,5 +1,70 @@
 cmake_minimum_required(VERSION 3.21)
-project(UsbAssistant LANGUAGES CXX)
+
+# ---------------------------------------------------------------------------
+# 版本号：默认从 git tag 推导。
+# tag 正好指向 HEAD 时是正式版本；分支、脏工作区、无 tag 都标记为开发版本，
+# 不会冒充正式版本。GitHub Actions 同样只依赖这份推导逻辑。
+# 也可通过 -DUSBASSISTANT_VERSION_OVERRIDE=1.2.3 直接指定编译版本。
+# ---------------------------------------------------------------------------
+set(USBASSISTANT_VERSION_OVERRIDE "" CACHE STRING
+    "手动指定编译版本（如 1.2.3）；留空则按 git tag / git describe 推导")
+
+set(USBASSISTANT_FALLBACK_VERSION "0.1.0")
+set(USBASSISTANT_VERSION "${USBASSISTANT_FALLBACK_VERSION}")
+set(USBASSISTANT_VERSION_DISPLAY "v${USBASSISTANT_FALLBACK_VERSION}-dev")
+set(USBASSISTANT_VERSION_IS_RELEASE OFF)
+set(USBASSISTANT_VERSION_SOURCE "git")
+
+if(USBASSISTANT_VERSION_OVERRIDE)
+    string(STRIP "${USBASSISTANT_VERSION_OVERRIDE}"
+           USBASSISTANT_VERSION_OVERRIDE_VALUE)
+    string(REGEX REPLACE "^[vV]" "" USBASSISTANT_VERSION_OVERRIDE_VALUE
+           "${USBASSISTANT_VERSION_OVERRIDE_VALUE}")
+    if(NOT USBASSISTANT_VERSION_OVERRIDE_VALUE MATCHES
+       "^[0-9]+(\\.[0-9]+)*$")
+        message(FATAL_ERROR
+            "USBASSISTANT_VERSION_OVERRIDE 必须是 1.2.3 这样的数字版本："
+            "${USBASSISTANT_VERSION_OVERRIDE}")
+    endif()
+    set(USBASSISTANT_VERSION "${USBASSISTANT_VERSION_OVERRIDE_VALUE}")
+    set(USBASSISTANT_VERSION_DISPLAY "v${USBASSISTANT_VERSION_OVERRIDE_VALUE}")
+    set(USBASSISTANT_VERSION_IS_RELEASE ON)
+    set(USBASSISTANT_VERSION_SOURCE "override")
+else()
+    find_program(USBASSISTANT_GIT git)
+    if(USBASSISTANT_GIT)
+        execute_process(
+            COMMAND "${USBASSISTANT_GIT}" describe --tags --always --dirty
+                    --match "v*"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE USBASSISTANT_GIT_DESCRIBE
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+    endif()
+
+    if(USBASSISTANT_GIT_DESCRIBE MATCHES "^v([0-9]+(\\.[0-9]+)+)$")
+        set(USBASSISTANT_VERSION "${CMAKE_MATCH_1}")
+        set(USBASSISTANT_VERSION_DISPLAY "v${CMAKE_MATCH_1}")
+        set(USBASSISTANT_VERSION_IS_RELEASE ON)
+    elseif(USBASSISTANT_GIT_DESCRIBE MATCHES
+           "^v([0-9]+(\\.[0-9]+)+)-([0-9]+)-g([0-9a-f]+)(-dirty)?$")
+        set(USBASSISTANT_VERSION "${CMAKE_MATCH_1}")
+        set(USBASSISTANT_VERSION_DISPLAY
+            "v${CMAKE_MATCH_1}-dev+g${CMAKE_MATCH_4}")
+    elseif(USBASSISTANT_GIT_DESCRIBE MATCHES
+           "^v([0-9]+(\\.[0-9]+)+)-dirty$")
+        set(USBASSISTANT_VERSION "${CMAKE_MATCH_1}")
+        set(USBASSISTANT_VERSION_DISPLAY "v${CMAKE_MATCH_1}-dev+dirty")
+    elseif(USBASSISTANT_GIT_DESCRIBE MATCHES "^([0-9a-f]+)(-dirty)?$")
+        set(USBASSISTANT_VERSION_DISPLAY
+            "v${USBASSISTANT_FALLBACK_VERSION}-dev+g${CMAKE_MATCH_1}")
+    endif()
+endif()
+
+message(STATUS
+    "UsbAssistant version: ${USBASSISTANT_VERSION_DISPLAY} "
+    "(source: ${USBASSISTANT_VERSION_SOURCE})")
+project(UsbAssistant VERSION ${USBASSISTANT_VERSION} LANGUAGES CXX)
 enable_testing()
 
 set(CMAKE_CXX_STANDARD 20)
@@ -36,11 +101,25 @@ add_library(usbassistant_core STATIC
     src/core/eject.cpp
     src/core/occupants.cpp
     src/core/elevation.cpp
+    src/core/update.cpp
 )
 target_include_directories(usbassistant_core PUBLIC src)
-target_compile_definitions(usbassistant_core PUBLIC ${USBASSISTANT_DEFS})
+target_compile_definitions(usbassistant_core PUBLIC ${USBASSISTANT_DEFS}
+    "USBASSISTANT_VERSION=L\"${USBASSISTANT_VERSION}\""
+    "USBASSISTANT_REPO_URL=L\"https://github.com/JiaHui-Nie/UsbAssistant\""
+    $<$<CONFIG:Debug>:USBASSISTANT_DEBUG_BUILD=1>
+)
+if(USBASSISTANT_VERSION_IS_RELEASE)
+    target_compile_definitions(usbassistant_core PUBLIC
+        $<$<CONFIG:Debug>:USBASSISTANT_DEV_BUILD=1>)
+else()
+    # 非 tag 构建（分支、脏工作区）统一按开发版处理。
+    target_compile_definitions(usbassistant_core PUBLIC
+        USBASSISTANT_DEV_BUILD=1)
+endif()
 target_link_libraries(usbassistant_core PUBLIC
     setupapi cfgmgr32 shell32 ole32 oleaut32 user32 advapi32 version uuid
+    winhttp
 )
 
 # ---------------------------------------------------------------------------
@@ -56,6 +135,7 @@ add_executable(UsbAssistant WIN32
     src/ui/draw.cpp
     src/ui/main_view.cpp
     src/ui/settings_window.cpp
+    src/ui/about_window.cpp
     src/ui/tray_menu.cpp
     src/ui/edge_bar.cpp
     res/app.rc
