@@ -8,7 +8,6 @@
 #include "core/app_control.h"
 #include "core/http.h"
 #include "core/log.h"
-#include "core/settings.h"
 #include "core/version.h"
 #include "core/zip.h"
 #include "ui/dpi.h"
@@ -141,7 +140,12 @@ bool UpdaterApp::Initialize(HINSTANCE instance, bool autocheck) {
     ui::EnableDpiAwareness();
 
     palette_ = ui::MakePalette(ui::IsSystemDarkMode());
-    top_most_ = SettingsStore().Load().top_most;
+    // 跟随主程序窗口的实时置顶状态，而不是再读一遍配置：主程序可能刚
+    // 切换过设置，且「关于」窗口此刻正以置顶层级挡在前面。
+    const RunningApp running = FindRunningApp();
+    top_most_ = running.window != nullptr &&
+                (GetWindowLongPtrW(running.window, GWL_EXSTYLE) &
+                 WS_EX_TOPMOST) != 0;
 
     const GUID d2d1_factory_iid = {
         0x06152247, 0x6f50, 0x465a,
@@ -183,7 +187,7 @@ bool UpdaterApp::Initialize(HINSTANCE instance, bool autocheck) {
         post_target_->hwnd = pump_;
     }
 
-    const HWND reference = FindRunningApp().window;
+    const HWND reference = running.window;
     if (!window_.Open(instance, reference, !autocheck_, d2d_, dwrite_, &fonts_,
                       palette_, top_most_,
                       [this]() { StartInstall(); },

@@ -70,6 +70,7 @@ private:
     D2D1_RECT_F CloseRect() const;
     D2D1_RECT_F PrimaryRect() const;
     D2D1_RECT_F SecondaryRect() const;
+    D2D1_RECT_F BodyRect() const;
     bool HasPrimary() const;
     bool HasSecondary() const;
     bool ShowsProgress() const;
@@ -94,6 +95,7 @@ private:
     bool animating_ = false;
 
     float scale_ = 1.0f;
+    bool top_most_ = false;
     Hover hover_ = Hover::None;
     bool tracking_leave_ = false;
     bool dragging_ = false;

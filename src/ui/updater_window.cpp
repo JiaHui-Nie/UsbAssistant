@@ -18,13 +18,15 @@ constexpr float kWidth = 400.0f;
 constexpr float kHeight = 252.0f;
 constexpr float kIconSize = 56.0f;
 constexpr float kIconTop = 24.0f;
+constexpr float kTitleTop = 92.0f;
+constexpr float kTitleBottom = 116.0f;
+constexpr float kBodyBottom = kHeight - 24.0f;
 constexpr float kButtonHeight = 32.0f;
 constexpr float kButtonTop = 196.0f;
 constexpr float kButtonRight = kWidth - 28.0f;
 constexpr float kSingleWidth = 88.0f;
 constexpr float kPrimaryWidth = 96.0f;
 constexpr float kSecondaryWidth = 84.0f;
-constexpr float kProgressTop = 172.0f;
 constexpr float kProgressHeight = 6.0f;
 constexpr float kDragTop = 96.0f;
 
@@ -44,6 +46,7 @@ bool UpdaterWindow::Open(HINSTANCE instance, HWND reference, bool visible,
                          CloseHandler on_close) {
     if (!d2d || !dwrite || !fonts) return false;
     palette_ = palette;
+    top_most_ = top_most;
     on_update_ = std::move(on_update);
     on_close_ = std::move(on_close);
 
@@ -101,6 +104,13 @@ void UpdaterWindow::Close() {
 void UpdaterWindow::Show() {
     if (!hwnd_) return;
     ShowWindow(hwnd_, SW_SHOW);
+    // 置顶层级相同的窗口之间按激活顺序排 z 序：仅靠创建时的置顶和
+    // SetForegroundWindow，跨进程时可能因前台锁失败而压在置顶的主程序
+    // 关于窗口下面。显示后再次置顶，确保进入置顶层最上方。
+    if (top_most_) {
+        SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
     SetForegroundWindow(hwnd_);
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -142,6 +152,13 @@ D2D1_RECT_F UpdaterWindow::PrimaryRect() const {
 D2D1_RECT_F UpdaterWindow::SecondaryRect() const {
     return Rect(PrimaryRect().left - 10.0f - kSecondaryWidth, kButtonTop,
                 PrimaryRect().left - 10.0f, kButtonTop + kButtonHeight);
+}
+
+// 标题与底部按钮之间的空白；没有按钮时延伸到窗口底部留白处。
+// 状态文字与进度条都在这块区域的垂直中心，二者互斥。
+D2D1_RECT_F UpdaterWindow::BodyRect() const {
+    const float bottom = HasPrimary() ? kButtonTop : kBodyBottom;
+    return Rect(36.0f, kTitleBottom, kWidth - 36.0f, bottom);
 }
 
 bool UpdaterWindow::HasPrimary() const {
@@ -283,8 +300,11 @@ void UpdaterWindow::PaintButton(ID2D1RenderTarget* target,
 
 void UpdaterWindow::PaintProgress(ID2D1RenderTarget* target,
                                   ID2D1SolidColorBrush* brush) {
+    const D2D1_RECT_F body = BodyRect();
+    const float center = (body.top + body.bottom) * 0.5f;
     const D2D1_RECT_F track =
-        Rect(36.0f, kProgressTop, kWidth - 36.0f, kProgressTop + kProgressHeight);
+        Rect(36.0f, center - kProgressHeight * 0.5f, kWidth - 36.0f,
+             center + kProgressHeight * 0.5f);
     FillRound(target, brush, track, kProgressHeight * 0.5f,
               WithAlpha(palette_.track, 1.0f));
 
@@ -347,7 +367,7 @@ void UpdaterWindow::Paint() {
                      palette_.accent);
 
     DrawText(target_, brush, L"检查更新", fonts_->empty_title,
-             Rect(24.0f, 92.0f, kWidth - 24.0f, 116.0f),
+             Rect(24.0f, kTitleTop, kWidth - 24.0f, kTitleBottom),
              palette_.text_primary);
 
     D2D1_COLOR_F text_color = palette_.text_primary;
@@ -365,10 +385,13 @@ void UpdaterWindow::Paint() {
         default:
             break;
     }
-    DrawText(target_, brush, text_, fonts_->dialog_message,
-             Rect(36.0f, 122.0f, kWidth - 36.0f, 166.0f), text_color);
-
-    if (ShowsProgress()) PaintProgress(target_, brush);
+    // 状态文字与进度条共用同一块居中区域，同一时刻只显示其中一个。
+    if (ShowsProgress()) {
+        PaintProgress(target_, brush);
+    } else {
+        DrawText(target_, brush, text_, fonts_->dialog_message, BodyRect(),
+                 text_color);
+    }
 
     if (HasSecondary()) {
         PaintButton(target_, brush, SecondaryRect(), SecondaryText(), false,

@@ -317,14 +317,14 @@ void TestVersionAndUpdate() {
     using namespace usb;
     CHECK_EQ(NormalizeVersion(L" v1.2.3 "), L"1.2.3");
     CHECK_EQ(NormalizeVersion(L"V2.0"), L"2.0");
-    CHECK_EQ(NormalizeVersion(L"1.2.0"), L"1.2.0");
+    CHECK_EQ(NormalizeVersion(L"1.2.1"), L"1.2.1");
 
     CHECK(CompareVersions(L"1.2.3", L"v1.2.3") == 0);
     CHECK(CompareVersions(L"1.2.3", L"1.2.4") < 0);
     CHECK(CompareVersions(L"1.10.0", L"1.9.9") > 0);
     CHECK(CompareVersions(L"2.0", L"2.0.0") == 0);
     CHECK(CompareVersions(L"1.2.3", L"1.2.3-beta") == 0);
-    CHECK(CompareVersions(L"abc", L"1.2.0") == 0);  // 无法比较时按相等处理
+    CHECK(CompareVersions(L"abc", L"1.2.1") == 0);  // 无法比较时按相等处理
 
     const std::string json =
         R"({"tag_name":"v1.4.0","html_url":)"
@@ -343,9 +343,9 @@ void TestVersionAndUpdate() {
         R"({"tag_name":"","html_url":"https://github.com/x/y"})", &tag, &url,
         &error));
     CHECK(!ParseLatestRelease(
-        R"({"tag_name":"v1.2.0","html_url":"file:///etc/passwd"})", &tag,
+        R"({"tag_name":"v1.2.1","html_url":"file:///etc/passwd"})", &tag,
         &url, &error));
-    CHECK(!ParseLatestRelease(R"({"tag_name":"v1.2.0"})", &tag, &url, &error));
+    CHECK(!ParseLatestRelease(R"({"tag_name":"v1.2.1"})", &tag, &url, &error));
 
     CHECK(!std::wstring(kAppVersion).empty());
 #if defined(USBASSISTANT_DEBUG_BUILD) || defined(USBASSISTANT_DEV_BUILD)
@@ -362,17 +362,17 @@ void TestVersionAndUpdate() {
 void TestReleaseAssets() {
     using namespace usb;
     const std::string json =
-        R"({"tag_name":"v1.2.0","name":"UsbAssistant v1.2.0",)"
-        R"("html_url":"https://github.com/JiaHui-Nie/UsbAssistant/releases/tag/v1.2.0",)"
+        R"({"tag_name":"v1.2.1","name":"UsbAssistant v1.2.1",)"
+        R"("html_url":"https://github.com/JiaHui-Nie/UsbAssistant/releases/tag/v1.2.1",)"
         R"("assets":[)"
-        R"({"name":"UsbAssistant-v1.2.0-debug-x64.zip","browser_download_url":)"
-        R"("https://github.com/x/y/releases/download/v1.2.0/UsbAssistant-v1.2.0-debug-x64.zip"},)"
-        R"({"name":"UsbAssistant-v1.2.0-release-x64.zip","browser_download_url":)"
-        R"("https://github.com/x/y/releases/download/v1.2.0/UsbAssistant-v1.2.0-release-x64.zip"},)"
-        R"({"name":"UsbAssistant-v1.2.0-debug-x86.zip","browser_download_url":)"
-        R"("https://github.com/x/y/releases/download/v1.2.0/UsbAssistant-v1.2.0-debug-x86.zip"},)"
-        R"({"name":"UsbAssistant-v1.2.0-release-x86.zip","browser_download_url":)"
-        R"("https://github.com/x/y/releases/download/v1.2.0/UsbAssistant-v1.2.0-release-x86.zip"}]})";
+        R"({"name":"UsbAssistant-v1.2.1-debug-x64.zip","browser_download_url":)"
+        R"("https://github.com/x/y/releases/download/v1.2.1/UsbAssistant-v1.2.1-debug-x64.zip"},)"
+        R"({"name":"UsbAssistant-v1.2.1-release-x64.zip","browser_download_url":)"
+        R"("https://github.com/x/y/releases/download/v1.2.1/UsbAssistant-v1.2.1-release-x64.zip"},)"
+        R"({"name":"UsbAssistant-v1.2.1-debug-x86.zip","browser_download_url":)"
+        R"("https://github.com/x/y/releases/download/v1.2.1/UsbAssistant-v1.2.1-debug-x86.zip"},)"
+        R"({"name":"UsbAssistant-v1.2.1-release-x86.zip","browser_download_url":)"
+        R"("https://github.com/x/y/releases/download/v1.2.1/UsbAssistant-v1.2.1-release-x86.zip"}]})";
 
     std::vector<ReleaseAsset> assets;
     CHECK(ParseReleaseAssets(json, &assets));
@@ -383,13 +383,13 @@ void TestReleaseAssets() {
     ReleaseAsset picked;
     // 四种组合必须各取各的，不能拿错维度。
     CHECK(SelectReleaseAsset(release, L"debug", L"x64", &picked));
-    CHECK_EQ(picked.name, L"UsbAssistant-v1.2.0-debug-x64.zip");
+    CHECK_EQ(picked.name, L"UsbAssistant-v1.2.1-debug-x64.zip");
     CHECK(SelectReleaseAsset(release, L"release", L"x64", &picked));
-    CHECK_EQ(picked.name, L"UsbAssistant-v1.2.0-release-x64.zip");
+    CHECK_EQ(picked.name, L"UsbAssistant-v1.2.1-release-x64.zip");
     CHECK(SelectReleaseAsset(release, L"debug", L"x86", &picked));
-    CHECK_EQ(picked.name, L"UsbAssistant-v1.2.0-debug-x86.zip");
+    CHECK_EQ(picked.name, L"UsbAssistant-v1.2.1-debug-x86.zip");
     CHECK(SelectReleaseAsset(release, L"release", L"x86", &picked));
-    CHECK_EQ(picked.name, L"UsbAssistant-v1.2.0-release-x86.zip");
+    CHECK_EQ(picked.name, L"UsbAssistant-v1.2.1-release-x86.zip");
     CHECK(!SelectReleaseAsset(release, L"release", L"arm64", &picked));
     CHECK_EQ(ReleaseAssetSuffix(L"debug", L"x86"), L"-debug-x86.zip");
 

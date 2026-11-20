@@ -13,7 +13,7 @@ struct ReleaseAsset {
 };
 
 struct LatestRelease {
-    std::wstring tag;      // 原始 tag，如 v1.2.0
+    std::wstring tag;      // 原始 tag，如 v1.2.1
     std::wstring version;  // 去掉前导 v 的纯数字版本
     std::wstring html_url;
     std::vector<ReleaseAsset> assets;

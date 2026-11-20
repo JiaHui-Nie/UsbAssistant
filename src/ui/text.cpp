@@ -90,7 +90,7 @@ bool CreateFonts(IDWriteFactory* factory, Fonts* fonts) {
         DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, false);
     fonts->dialog_message = CreateFormat(
         factory, family, 12.0f, DWRITE_FONT_WEIGHT_NORMAL,
-        DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, true);
+        DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, true);
 
     return fonts->title && fonts->subtitle && fonts->card_name &&
            fonts->part_name && fonts->meta && fonts->pill && fonts->button &&

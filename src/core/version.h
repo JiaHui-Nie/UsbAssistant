@@ -4,7 +4,7 @@
 #pragma once
 
 #ifndef USBASSISTANT_VERSION
-#define USBASSISTANT_VERSION L"1.2.0"
+#define USBASSISTANT_VERSION L"1.2.1"
 #endif
 
 #ifndef USBASSISTANT_REPO_URL
@@ -20,7 +20,7 @@ inline constexpr const wchar_t* kAppVersion = USBASSISTANT_VERSION;
 // 开发版（Debug、分支、脏工作区、无 tag）对外只显示 dev，不带数字或 hash。
 inline constexpr const wchar_t* kAboutVersion = L"dev";
 #else
-// 正式版（tag 正好在 HEAD）：只显示纯数字版本号，例如 1.2.0。
+// 正式版（tag 正好在 HEAD）：只显示纯数字版本号，例如 1.2.1。
 inline constexpr const wchar_t* kAboutVersion = USBASSISTANT_VERSION;
 #endif
 
