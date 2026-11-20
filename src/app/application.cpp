@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "core/app_control.h"
 #include "core/devices.h"
 #include "core/eject.h"
 #include "core/elevation.h"
@@ -22,14 +23,12 @@
 #include "core/occupants.h"
 #include "core/storage.h"
 #include "core/text.h"
-#include "core/update.h"
 #include "core/version.h"
 #include "ui/draw.h"
 
 namespace usb::app {
 namespace {
 
-constexpr wchar_t kWindowClass[] = L"UsbAssistantMain";
 constexpr wchar_t kWindowTitle[] = L"U 盘助手";
 
 constexpr UINT kMessageTray = WM_APP + 1;
@@ -39,7 +38,6 @@ constexpr UINT kMessageOccupantsDone = WM_APP + 4;
 constexpr UINT kMessageHelperDone = WM_APP + 5;
 constexpr UINT kMessageShellNotify = WM_APP + 6;
 constexpr UINT kMessageShowMain = WM_APP + 7;
-constexpr UINT kMessageUpdateDone = WM_APP + 8;
 
 constexpr UINT_PTR kTimerAnim = 1;
 constexpr UINT_PTR kTimerScan = 2;
@@ -51,6 +49,7 @@ constexpr UINT_PTR kTimerAction = 7;
 constexpr UINT_PTR kTimerTrayHealth = 8;
 constexpr UINT_PTR kTimerOccupantsRefresh = 9;
 constexpr UINT_PTR kTimerUpdateAuto = 10;
+constexpr UINT_PTR kTimerPendingUpdater = 11;
 
 constexpr int kActionTimeoutEjectMs = 30000;
 constexpr int kActionTimeoutScanMs = 15000;
@@ -91,11 +90,6 @@ struct HelperPayload {
     std::wstring volume_path;
     wchar_t letter = 0;
     std::wstring root;
-};
-
-struct UpdatePayload {
-    std::uint64_t generation = 0;
-    UpdateCheckResult result;
 };
 
 template <typename T>
@@ -264,12 +258,12 @@ Application::~Application() {
     // 正在等待设备消失。任务只访问 core 与 PostTarget，不访问 Application。
     scan_worker_.Stop(false);
     action_worker_.Stop(false);
-    update_worker_.Stop(false);
 
     if (hwnd_ && IsWindow(hwnd_)) DestroyWindow(hwnd_);
     UnmountManagedVolumes(PartitionKind::Normal, true);
     settings_window_.Close();
     about_window_.Close();
+    update_error_dialog_.Close();
     edge_bar_.Destroy();
     if (canvas_.valid()) canvas_.Release();
     ui::ReleaseFonts(&fonts_);
@@ -340,6 +334,7 @@ bool Application::Initialize(HINSTANCE instance, bool start_hidden) {
     if (!icon_edge_) icon_edge_ = CopyIcon(icon_large_);
 
     taskbar_created_message_ = RegisterWindowMessageW(L"TaskbarCreated");
+    exit_request_message_ = RegisterWindowMessageW(kExitRequestMessageName);
 
     WNDCLASSEXW window_class = {};
     window_class.cbSize = sizeof(window_class);
@@ -348,7 +343,7 @@ bool Application::Initialize(HINSTANCE instance, bool start_hidden) {
     window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     window_class.hIcon = icon_large_;
     window_class.hIconSm = icon_small_;
-    window_class.lpszClassName = kWindowClass;
+    window_class.lpszClassName = kMainWindowClass;
     if (!RegisterClassExW(&window_class)) return false;
 
     RebuildModel();
@@ -364,7 +359,7 @@ bool Application::Initialize(HINSTANCE instance, bool start_hidden) {
 
     DWORD ex_style = WS_EX_LAYERED | WS_EX_TOOLWINDOW;
     if (settings_.top_most) ex_style |= WS_EX_TOPMOST;
-    hwnd_ = CreateWindowExW(ex_style, kWindowClass, kWindowTitle, WS_POPUP,
+    hwnd_ = CreateWindowExW(ex_style, kMainWindowClass, kWindowTitle, WS_POPUP,
                             origin.x, origin.y, width_px, height_px, nullptr,
                             nullptr, instance, this);
     if (!hwnd_) return false;
@@ -377,6 +372,11 @@ bool Application::Initialize(HINSTANCE instance, bool start_hidden) {
     ChangeWindowMessageFilterEx(hwnd_, kMessageTray, MSGFLT_ALLOW, nullptr);
     if (taskbar_created_message_ != 0) {
         ChangeWindowMessageFilterEx(hwnd_, taskbar_created_message_,
+                                    MSGFLT_ALLOW, nullptr);
+    }
+    if (exit_request_message_ != 0) {
+        // 允许升级器（可能以不同权限运行）请求本程序退出。
+        ChangeWindowMessageFilterEx(hwnd_, exit_request_message_,
                                     MSGFLT_ALLOW, nullptr);
     }
     if (!canvas_.Initialize(d2d_, width_px, height_px)) return false;
@@ -393,7 +393,6 @@ bool Application::Initialize(HINSTANCE instance, bool start_hidden) {
 
     scan_worker_.Start();
     action_worker_.Start();
-    update_worker_.Start();
 
     SHChangeNotifyEntry notify_entry = {};
     notify_entry.pidl = nullptr;
@@ -428,6 +427,10 @@ bool Application::Initialize(HINSTANCE instance, bool start_hidden) {
     // 启动后延迟几秒再静默检查更新，避开启动期的扫描与绘制。
     if (settings_.auto_check_updates) {
         SetTimer(hwnd_, kTimerUpdateAuto, 5000, nullptr);
+    }
+    // 升级器当时可能仍在退出，导致启动早期的替换失败：稍后再补一次。
+    if (HasPendingUpdaterUpdate()) {
+        SetTimer(hwnd_, kTimerPendingUpdater, 1500, nullptr);
     }
     return true;
 }
@@ -675,55 +678,29 @@ void Application::ShowSettings() {
 }
 
 void Application::ShowAbout() {
-    // 重新打开时让任何在途结果失效，避免旧结果落到新窗口上。
-    ++update_generation_;
-    update_busy_ = false;
-    about_window_.Open(
-        instance_, hwnd_, d2d_, dwrite_, &fonts_, palette_, kAboutVersion,
-        [this]() { StartUpdateCheck(false); },
-        [this]() {
-            ++update_generation_;
-            update_busy_ = false;
-        });
+    about_window_.Open(instance_, hwnd_, d2d_, dwrite_, &fonts_, palette_,
+                       kAboutVersion, [this]() { LaunchUpdater(false); });
     ApplyTopMost();
 }
 
-void Application::StartUpdateCheck(bool silent) {
-    if (!hwnd_) return;
-    if (update_busy_) return;
-    update_busy_ = true;
-    update_silent_ = silent;
-    const std::uint64_t generation = ++update_generation_;
-    const std::shared_ptr<PostTarget> target = post_target_;
-    USB_LOG_INFO(L"update",
-                 L"开始检查更新：current=%s silent=%d dev=%d",
-                 kAppVersion, silent ? 1 : 0, kDevBuild ? 1 : 0);
-    update_worker_.Post([target, generation]() {
-        auto payload = std::make_unique<UpdatePayload>();
-        payload->generation = generation;
-        payload->result = CheckLatestRelease(kAppVersion);
-        PostPayload(target, kMessageUpdateDone, std::move(payload));
-    });
+void Application::LaunchUpdater(bool autocheck) {
+    const std::wstring directory = ExecutableDirectory();
+    const std::wstring updater = directory + L"\\" + kUpdaterExeName;
+    if (LaunchApp(updater, autocheck ? L"--autocheck" : L"", directory)) {
+        return;
+    }
+    // 启动时的静默检查失败不打扰用户，只在手动点击时明确报错。
+    USB_LOG_ERROR(L"app", L"无法启动升级器：%s", updater.c_str());
+    if (!autocheck) ShowUpdaterLaunchError();
 }
 
-void Application::ShowUpdateBalloon(const std::wstring& latest_version) {
-    if (!hwnd_ || !tray_registered_) return;
-    NOTIFYICONDATAW data = {};
-    data.cbSize = sizeof(data);
-    data.hWnd = hwnd_;
-    data.uID = 1;
-    data.uFlags = NIF_INFO;
-    data.dwInfoFlags = NIIF_INFO;
-    const std::wstring title = L"发现新版本 v" + latest_version;
-    const std::wstring text =
-        L"打开托盘菜单中的「关于」即可查看并前往下载。";
-    std::copy_n(title.begin(),
-                std::min(title.size(), std::size(data.szInfoTitle) - 1),
-                data.szInfoTitle);
-    std::copy_n(text.begin(),
-                std::min(text.size(), std::size(data.szInfo) - 1),
-                data.szInfo);
-    Shell_NotifyIconW(NIM_MODIFY, &data);
+void Application::ShowUpdaterLaunchError() {
+    if (!update_error_dialog_.Open(
+            instance_, hwnd_, d2d_, dwrite_, &fonts_, palette_, L"U 盘助手",
+            L"无法打开升级器，重新下载应用程序可能会解决问题。", L"好的",
+            settings_.top_most)) {
+        USB_LOG_ERROR(L"app", L"无法显示升级器启动失败提示");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2001,7 +1978,11 @@ void Application::OnTimer(UINT_PTR timer) {
             break;
         case kTimerUpdateAuto:
             KillTimer(hwnd_, kTimerUpdateAuto);
-            if (settings_.auto_check_updates) StartUpdateCheck(true);
+            if (settings_.auto_check_updates) LaunchUpdater(true);
+            break;
+        case kTimerPendingUpdater:
+            KillTimer(hwnd_, kTimerPendingUpdater);
+            ApplyPendingUpdaterUpdate();
             break;
         case kTimerEmptyHide:
             KillTimer(hwnd_, kTimerEmptyHide);
@@ -2081,6 +2062,14 @@ LRESULT Application::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
                                    LPARAM lparam) {
     if (taskbar_created_message_ != 0 && message == taskbar_created_message_) {
         AddTrayIcon();
+        return 0;
+    }
+
+    if (exit_request_message_ != 0 && message == exit_request_message_) {
+        // 升级器请求退出：直接销毁窗口，由 WM_DESTROY 完成
+        // 保存配置、撤销本程序盘符、移除托盘图标等正常退出流程。
+        USB_LOG_INFO(L"app", L"收到升级器退出请求");
+        DestroyWindow(hwnd);
         return 0;
     }
 
@@ -2298,32 +2287,6 @@ LRESULT Application::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             return 0;
         }
 
-        case kMessageUpdateDone: {
-            auto payload = TakePayload<UpdatePayload>(lparam);
-            if (!payload) return 0;
-            if (payload->generation != update_generation_) return 0;
-            update_busy_ = false;
-            const UpdateCheckResult& result = payload->result;
-            USB_LOG_INFO(L"update", L"更新检查结果：status=%d latest=%s",
-                         static_cast<int>(result.status),
-                         result.latest_version.c_str());
-
-            if (kDevBuild) {
-                // 开发版：每次检查都必须让用户看到结果（含启动自动检查）。
-                if (!about_window_.IsOpen()) ShowAbout();
-                about_window_.SetUpdateResult(result);
-                return 0;
-            }
-
-            if (about_window_.IsOpen()) about_window_.SetUpdateResult(result);
-            // 启动时的静默检查只在发现新版本时提示；失败与已是最新都不打扰。
-            if (update_silent_ &&
-                result.status == UpdateCheckResult::Status::UpdateAvailable) {
-                ShowUpdateBalloon(result.latest_version);
-            }
-            return 0;
-        }
-
         case kMessageHelperDone: {
             auto payload = TakePayload<HelperPayload>(lparam);
             if (!payload) return 0;
@@ -2521,6 +2484,7 @@ LRESULT Application::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             KillTimer(hwnd_, kTimerToast);
             KillTimer(hwnd_, kTimerAction);
             KillTimer(hwnd_, kTimerUpdateAuto);
+            KillTimer(hwnd_, kTimerPendingUpdater);
             SaveSettings();
             UnmountManagedVolumes(PartitionKind::Normal, true);
             RemoveTrayIcon();
@@ -2530,6 +2494,7 @@ LRESULT Application::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             }
             settings_window_.Close();
             about_window_.Close();
+            update_error_dialog_.Close();
             edge_bar_.Destroy();
             edge_collapsed_ = false;
             {

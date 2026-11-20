@@ -18,7 +18,7 @@ namespace usb::ui {
 namespace {
 
 constexpr float kWidth = 440.0f;
-constexpr float kHeight = 362.0f;
+constexpr float kHeight = 322.0f;
 constexpr float kCardTop = 58.0f;
 constexpr float kSidePad = 14.0f;
 
@@ -80,8 +80,6 @@ bool AboutWindow::Open(HINSTANCE instance, HWND owner, ID2D1Factory* d2d,
         hover_ = Hover::None;
         dragging_ = false;
         tracking_leave_ = false;
-        checking_ = false;
-        has_result_ = false;
         ShowWindow(hwnd_, SW_SHOW);
         SetForegroundWindow(hwnd_);
         InvalidateRect(hwnd_, nullptr, FALSE);
@@ -154,19 +152,6 @@ void AboutWindow::SetPalette(const Palette& palette) {
         DwmSetWindowAttribute(hwnd_, 20, &dark, sizeof(dark));
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
-}
-
-void AboutWindow::SetChecking(bool checking) {
-    checking_ = checking;
-    if (checking) has_result_ = false;
-    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
-}
-
-void AboutWindow::SetUpdateResult(const UpdateCheckResult& result) {
-    checking_ = false;
-    result_ = result;
-    has_result_ = true;
-    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void AboutWindow::ApplyScale() {
@@ -247,19 +232,10 @@ D2D1_RECT_F AboutWindow::RepositoryLinkRect() const {
     return Rect(36.0f, 206.0f, kWidth - 36.0f, 234.0f);
 }
 
-D2D1_RECT_F AboutWindow::StatusRect() const {
-    return Rect(36.0f, 292.0f, kWidth - 36.0f, 326.0f);
-}
-
 AboutWindow::Hover AboutWindow::HitControl(float x, float y) const {
     if (Contains(CloseRect(), x, y)) return Hover::Close;
     if (Contains(RepositoryLinkRect(), x, y)) return Hover::Repository;
-    if (!checking_ && Contains(CheckRect(), x, y)) return Hover::Check;
-    if (has_result_ &&
-        result_.status == UpdateCheckResult::Status::UpdateAvailable &&
-        Contains(StatusRect(), x, y)) {
-        return Hover::Release;
-    }
+    if (Contains(CheckRect(), x, y)) return Hover::Check;
     return Hover::None;
 }
 
@@ -349,44 +325,13 @@ void AboutWindow::Paint() {
     brush->SetColor(WithAlpha(palette_.text_primary, 0.08f));
     target_->DrawLine({36.0f, 244.0f}, {kWidth - 36.0f, 244.0f}, brush, 1.0f);
 
-    // 版本更新
+    // 版本更新：检查与下载都交给独立升级器，这里只保留入口按钮。
     DrawText(target_, brush, L"版本更新", fonts_->part_name,
-             Rect(36.0f, 254.0f, 260.0f, 276.0f),
+             Rect(36.0f, 254.0f, 260.0f, 294.0f),
              palette_.text_secondary);
 
-    std::wstring status_text;
-    D2D1_COLOR_F status_color = palette_.text_tertiary;
-    if (checking_) {
-        status_text = L"正在检查更新…";
-        status_color = palette_.text_secondary;
-    } else if (has_result_) {
-        status_text = result_.message;
-        switch (result_.status) {
-            case UpdateCheckResult::Status::UpToDate:
-                status_color = palette_.success;
-                break;
-            case UpdateCheckResult::Status::UpdateAvailable:
-                status_text += L"，点击查看 Release 页面";
-                status_color = palette_.accent;
-                break;
-            case UpdateCheckResult::Status::NetworkError:
-                status_color = palette_.warn;
-                break;
-            case UpdateCheckResult::Status::ParseError:
-                status_color = palette_.danger;
-                break;
-        }
-    } else if (kDevBuild) {
-        status_text = L"开发版：每次检查更新都会显示结果。";
-    } else {
-        status_text = L"点击「检查更新」获取最新版本。";
-    }
-    DrawTextTrim(dwrite_, target_, brush, status_text, fonts_->meta,
-                 StatusRect(), status_color);
-
-    PaintButton(target_, brush, CheckRect(),
-                checking_ ? L"检查中…" : L"检查更新", false,
-                hover_ == Hover::Check, !checking_);
+    PaintButton(target_, brush, CheckRect(), L"检查更新", false,
+                hover_ == Hover::Check, true);
 
     brush->Release();
     const HRESULT result = target_->EndDraw();
@@ -444,16 +389,10 @@ LRESULT AboutWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
                     Close();
                     return 0;
                 case Hover::Check:
-                    if (!checking_ && on_check_) {
-                        SetChecking(true);
-                        on_check_();
-                    }
+                    if (on_check_) on_check_();
                     return 0;
                 case Hover::Repository:
                     OpenUrl(kRepositoryUrl);
-                    return 0;
-                case Hover::Release:
-                    OpenUrl(result_.release_url);
                     return 0;
                 case Hover::None:
                     break;

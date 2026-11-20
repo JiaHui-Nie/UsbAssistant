@@ -204,6 +204,61 @@ void DrawEjectGlyph(ID2D1RenderTarget* target, ID2D1SolidColorBrush* brush,
                      1.6f);
 }
 
+void DrawUpgradeGlyph(ID2D1RenderTarget* target, ID2D1SolidColorBrush* brush,
+                      float center_x, float center_y, float size,
+                      const D2D1_COLOR_F& color) {
+    if (!target || !brush || size <= 0.0f) return;
+    ID2D1Factory* factory = nullptr;
+    target->GetFactory(&factory);
+    if (!factory) return;
+
+    // 与程序图标一致的线性箭头；size 为箭头包围盒高度。
+    // 光学居中：包围盒中心比几何中心再上移约 2.4%。
+    const float stroke = size * 0.1875f;
+    const float optical_y = center_y - size * 0.024f;
+    const float top = optical_y - size * 0.5f;
+    const float tip_y = top + stroke * 0.5f;
+    const float bottom_y = top + size - stroke * 0.5f;
+    const float head_half = size * 0.320f;
+    const float head_base_y = top + size * 0.420f;
+
+    ID2D1PathGeometry* path = nullptr;
+    if (FAILED(factory->CreatePathGeometry(&path)) || !path) return;
+    ID2D1GeometrySink* sink = nullptr;
+    if (FAILED(path->Open(&sink)) || !sink) {
+        path->Release();
+        return;
+    }
+
+    sink->BeginFigure({center_x, tip_y + size * 0.016f},
+                      D2D1_FIGURE_BEGIN_HOLLOW);
+    sink->AddLine({center_x, bottom_y});
+    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+
+    sink->BeginFigure({center_x - head_half, head_base_y},
+                      D2D1_FIGURE_BEGIN_HOLLOW);
+    sink->AddLine({center_x, tip_y});
+    sink->AddLine({center_x + head_half, head_base_y});
+    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+    sink->Close();
+
+    D2D1_STROKE_STYLE_PROPERTIES props = {};
+    props.startCap = D2D1_CAP_STYLE_ROUND;
+    props.endCap = D2D1_CAP_STYLE_ROUND;
+    props.dashCap = D2D1_CAP_STYLE_ROUND;
+    props.lineJoin = D2D1_LINE_JOIN_ROUND;
+    props.miterLimit = 1.0f;
+    ID2D1StrokeStyle* style = nullptr;
+    factory->CreateStrokeStyle(props, nullptr, 0, &style);
+
+    brush->SetColor(color);
+    target->DrawGeometry(path, brush, stroke, style);
+    if (style) style->Release();
+
+    sink->Release();
+    path->Release();
+}
+
 void DrawShieldGlyph(ID2D1RenderTarget* target, ID2D1SolidColorBrush* brush,
                      float center_x, float center_y, float size,
                      const D2D1_COLOR_F& shield_color,

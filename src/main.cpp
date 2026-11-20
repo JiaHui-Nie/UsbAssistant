@@ -10,13 +10,13 @@
 #include <string>
 
 #include "app/application.h"
+#include "core/app_control.h"
 #include "core/elevation.h"
 #include "core/log.h"
 
 namespace {
 
 constexpr wchar_t kMutexName[] = L"UsbAssistant_SingleInstance_2026";
-constexpr wchar_t kWindowClass[] = L"UsbAssistantMain";
 
 bool HasArgument(int argc, wchar_t* const* argv, const wchar_t* name) {
     for (int i = 1; i < argc; ++i) {
@@ -27,7 +27,9 @@ bool HasArgument(int argc, wchar_t* const* argv, const wchar_t* name) {
 
 HWND FindMainWindow() {
     for (int attempt = 0; attempt < 30; ++attempt) {
-        if (HWND hwnd = FindWindowW(kWindowClass, nullptr)) return hwnd;
+        if (HWND hwnd = FindWindowW(usb::kMainWindowClass, nullptr)) {
+            return hwnd;
+        }
         Sleep(50);
     }
     return nullptr;
@@ -63,6 +65,8 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 
     auto application = std::make_unique<usb::app::Application>();
     usb::log::Init();
+    // 先应用升级器留下的新版本，再走任何启动流程（含自动更新检测）。
+    usb::ApplyPendingUpdaterUpdate();
     if (!application->Initialize(instance, autostart)) {
         usb::log::Shutdown();
         MessageBoxW(nullptr,

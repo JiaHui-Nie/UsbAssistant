@@ -22,6 +22,7 @@ struct Fonts {
     IDWriteTextFormat* toast = nullptr;
     IDWriteTextFormat* dialog_title = nullptr;
     IDWriteTextFormat* dialog_row = nullptr;
+    IDWriteTextFormat* dialog_message = nullptr;
 
     void Release();
 };

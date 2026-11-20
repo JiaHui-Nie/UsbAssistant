@@ -4,7 +4,7 @@
 #pragma once
 
 #ifndef USBASSISTANT_VERSION
-#define USBASSISTANT_VERSION L"1.1.1"
+#define USBASSISTANT_VERSION L"1.2.0"
 #endif
 
 #ifndef USBASSISTANT_REPO_URL
@@ -20,7 +20,7 @@ inline constexpr const wchar_t* kAppVersion = USBASSISTANT_VERSION;
 // 开发版（Debug、分支、脏工作区、无 tag）对外只显示 dev，不带数字或 hash。
 inline constexpr const wchar_t* kAboutVersion = L"dev";
 #else
-// 正式版（tag 正好在 HEAD）：只显示纯数字版本号，例如 1.1.1。
+// 正式版（tag 正好在 HEAD）：只显示纯数字版本号，例如 1.2.0。
 inline constexpr const wchar_t* kAboutVersion = USBASSISTANT_VERSION;
 #endif
 
@@ -28,6 +28,20 @@ inline constexpr const wchar_t* kAboutVersion = USBASSISTANT_VERSION;
 inline constexpr bool kDevBuild = true;
 #else
 inline constexpr bool kDevBuild = false;
+#endif
+
+// 发布包维度：配置（debug / release）与架构（x64 / x86）。
+// 用于在 GitHub Release 资产里匹配与自身完全对应的 zip。
+#if defined(USBASSISTANT_DEBUG_BUILD)
+inline constexpr const wchar_t* kBuildConfigLabel = L"debug";
+#else
+inline constexpr const wchar_t* kBuildConfigLabel = L"release";
+#endif
+
+#if defined(_M_X64) || defined(__x86_64__)
+inline constexpr const wchar_t* kBuildArchLabel = L"x64";
+#else
+inline constexpr const wchar_t* kBuildArchLabel = L"x86";
 #endif
 
 inline constexpr const wchar_t* kRepositoryUrl = USBASSISTANT_REPO_URL;

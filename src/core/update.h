@@ -1,24 +1,28 @@
-// 版本比较与 GitHub Releases 更新检查。
+// 版本比较、GitHub Releases 查询与发布包匹配。
 // 网络请求是同步的，调用方必须放到后台线程，避免阻塞界面。
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace usb {
 
-struct UpdateCheckResult {
-    enum class Status {
-        UpToDate,
-        UpdateAvailable,
-        NetworkError,
-        ParseError,
-    };
+struct ReleaseAsset {
+    std::wstring name;
+    std::wstring download_url;
+};
 
-    Status status = Status::NetworkError;
-    std::wstring current_version;
-    std::wstring latest_version;
-    std::wstring release_url;
-    std::wstring message;
+struct LatestRelease {
+    std::wstring tag;      // 原始 tag，如 v1.2.0
+    std::wstring version;  // 去掉前导 v 的纯数字版本
+    std::wstring html_url;
+    std::vector<ReleaseAsset> assets;
+};
+
+enum class ReleaseFetchStatus {
+    Ok,
+    NetworkError,
+    ParseError,
 };
 
 // 去掉首尾空白与前导 v/V，得到 1.2.3 这样的形式。
@@ -32,9 +36,22 @@ int CompareVersions(const std::wstring& left, const std::wstring& right);
 bool ParseLatestRelease(const std::string& json, std::wstring* tag,
                         std::wstring* html_url, std::wstring* error);
 
-// 请求 GitHub 最新 release 并与 current_version 比较。
-// timeout_ms 同时用于连接、发送与接收超时。
-UpdateCheckResult CheckLatestRelease(const std::wstring& current_version,
-                                     int timeout_ms = 8000);
+// 解析 assets 数组中的文件名与下载地址；没有可用资产时返回 false。
+bool ParseReleaseAssets(const std::string& json,
+                        std::vector<ReleaseAsset>* assets);
+
+// 请求 GitHub 最新 release：tag、版本与可选资产列表。
+ReleaseFetchStatus FetchLatestRelease(LatestRelease* release,
+                                      std::wstring* error,
+                                      int timeout_ms = 8000);
+
+// 发布包文件名后缀，如 "-debug-x64.zip"。配置与架构在编译期确定。
+std::wstring ReleaseAssetSuffix(const std::wstring& config_label,
+                                const std::wstring& arch_label);
+
+// 找出与自身配置/架构完全匹配的资产（后缀匹配，不会拿错维度）。
+bool SelectReleaseAsset(const LatestRelease& release,
+                        const std::wstring& config_label,
+                        const std::wstring& arch_label, ReleaseAsset* asset);
 
 }  // namespace usb

@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.21)
 set(USBASSISTANT_VERSION_OVERRIDE "" CACHE STRING
     "手动指定编译版本（如 1.2.3）；留空则按 git tag / git describe 推导")
 
-set(USBASSISTANT_FALLBACK_VERSION "1.1.1")
+set(USBASSISTANT_FALLBACK_VERSION "1.2.0")
 set(USBASSISTANT_VERSION "${USBASSISTANT_FALLBACK_VERSION}")
 set(USBASSISTANT_VERSION_DISPLAY "dev")
 set(USBASSISTANT_VERSION_IS_RELEASE OFF)
@@ -100,6 +100,9 @@ add_library(usbassistant_core STATIC
     src/core/occupants.cpp
     src/core/elevation.cpp
     src/core/update.cpp
+    src/core/http.cpp
+    src/core/zip.cpp
+    src/core/app_control.cpp
 )
 target_include_directories(usbassistant_core PUBLIC src)
 target_compile_definitions(usbassistant_core PUBLIC ${USBASSISTANT_DEFS}
@@ -134,6 +137,7 @@ add_executable(UsbAssistant WIN32
     src/ui/main_view.cpp
     src/ui/settings_window.cpp
     src/ui/about_window.cpp
+    src/ui/message_dialog.cpp
     src/ui/tray_menu.cpp
     src/ui/edge_bar.cpp
     res/app.rc
@@ -142,6 +146,24 @@ target_link_libraries(UsbAssistant PRIVATE
     usbassistant_core d2d1 dwrite dwmapi gdi32 gdiplus
 )
 target_include_directories(UsbAssistant PRIVATE src)
+
+# ---------------------------------------------------------------------------
+# 升级器：独立程序，负责检查更新、下载、解压、替换与重启主程序。
+# ---------------------------------------------------------------------------
+add_executable(UsbAssistantUpdater WIN32
+    src/updater/main.cpp
+    src/app/updater_app.cpp
+    src/app/worker.cpp
+    src/ui/theme.cpp
+    src/ui/text.cpp
+    src/ui/draw.cpp
+    src/ui/updater_window.cpp
+    res/updater.rc
+)
+target_link_libraries(UsbAssistantUpdater PRIVATE
+    usbassistant_core d2d1 dwrite dwmapi gdi32 gdiplus
+)
+target_include_directories(UsbAssistantUpdater PRIVATE src)
 
 # ---------------------------------------------------------------------------
 # 核心逻辑单元测试（不依赖界面，可用 ctest 运行）。
@@ -157,14 +179,14 @@ endif()
 # 编译选项 / 运行时库
 # ---------------------------------------------------------------------------
 if(MSVC)
-    foreach(target UsbAssistant usbassistant_core)
+    foreach(target UsbAssistant UsbAssistantUpdater usbassistant_core)
         target_compile_options(${target} PRIVATE /W4 /utf-8 /permissive-)
     endforeach()
     if(USBASSISTANT_BUILD_TESTS)
         target_compile_options(usbassistant_tests PRIVATE /W4 /utf-8 /permissive-)
     endif()
 else()
-    foreach(target UsbAssistant usbassistant_core)
+    foreach(target UsbAssistant UsbAssistantUpdater usbassistant_core)
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wno-unused-parameter)
     endforeach()
     if(USBASSISTANT_BUILD_TESTS)
@@ -175,14 +197,27 @@ else()
     target_link_options(UsbAssistant PRIVATE
         -static -static-libgcc -static-libstdc++ -lwinpthread
         $<$<CONFIG:Release>:-s>)
+    target_link_options(UsbAssistantUpdater PRIVATE
+        -static -static-libgcc -static-libstdc++ -lwinpthread
+        $<$<CONFIG:Release>:-s>)
 endif()
 
+# ---------------------------------------------------------------------------
+# 产物布局（扁平）：
+#   x64：cmake -B build -A x64        -> build/Release、build/Debug
+#   x86：cmake -B build/x86 -A Win32  -> build/x86/Release、build/x86/Debug
+# 多配置生成器会自动追加配置子目录。
+# ---------------------------------------------------------------------------
 set_target_properties(UsbAssistant PROPERTIES
     OUTPUT_NAME "UsbAssistant"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+set_target_properties(UsbAssistantUpdater PROPERTIES
+    OUTPUT_NAME "UsbAssistantUpdater"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
 if(USBASSISTANT_BUILD_TESTS)
     set_target_properties(usbassistant_tests PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
     )
 endif()

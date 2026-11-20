@@ -21,6 +21,7 @@ void Fonts::Release() {
     release(toast);
     release(dialog_title);
     release(dialog_row);
+    release(dialog_message);
 }
 
 IDWriteTextFormat* CreateFormat(IDWriteFactory* factory, const wchar_t* family,
@@ -87,11 +88,14 @@ bool CreateFonts(IDWriteFactory* factory, Fonts* fonts) {
     fonts->dialog_row = CreateFormat(
         factory, family, 12.0f, DWRITE_FONT_WEIGHT_NORMAL,
         DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, false);
+    fonts->dialog_message = CreateFormat(
+        factory, family, 12.0f, DWRITE_FONT_WEIGHT_NORMAL,
+        DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, true);
 
     return fonts->title && fonts->subtitle && fonts->card_name &&
            fonts->part_name && fonts->meta && fonts->pill && fonts->button &&
            fonts->empty_title && fonts->empty_hint && fonts->toast &&
-           fonts->dialog_title && fonts->dialog_row;
+           fonts->dialog_title && fonts->dialog_row && fonts->dialog_message;
 }
 
 void ReleaseFonts(Fonts* fonts) {

@@ -1,4 +1,4 @@
-// 关于窗口：自绘卡片，展示版本、项目地址，并支持检查更新。
+// 关于窗口：自绘卡片，展示版本与项目地址；检查更新交给独立升级器。
 #pragma once
 
 #include <windows.h>
@@ -8,7 +8,6 @@
 #include <functional>
 #include <string>
 
-#include "core/update.h"
 #include "ui/text.h"
 #include "ui/theme.h"
 
@@ -35,16 +34,12 @@ public:
     void SetTopMost(bool enabled);
     void SetPalette(const Palette& palette);
 
-    void SetChecking(bool checking);
-    void SetUpdateResult(const UpdateCheckResult& result);
-
 private:
     enum class Hover {
         None,
         Close,
         Check,
         Repository,
-        Release,
     };
 
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam,
@@ -66,7 +61,6 @@ private:
     D2D1_RECT_F CloseRect() const;
     D2D1_RECT_F CheckRect() const;
     D2D1_RECT_F RepositoryLinkRect() const;
-    D2D1_RECT_F StatusRect() const;
     Hover HitControl(float x, float y) const;
 
     HINSTANCE instance_ = nullptr;
@@ -79,10 +73,6 @@ private:
     std::wstring version_;
     CheckHandler on_check_;
     CloseHandler on_close_;
-
-    UpdateCheckResult result_ = {};
-    bool has_result_ = false;
-    bool checking_ = false;
 
     float scale_ = 1.0f;
     Hover hover_ = Hover::None;

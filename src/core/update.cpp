@@ -1,30 +1,18 @@
 #include "core/update.h"
 
 #include <windows.h>
-#include <winhttp.h>
 
 #include <algorithm>
-#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "core/http.h"
+#include "core/log.h"
 #include "core/version.h"
 
 namespace usb {
 namespace {
-
-constexpr std::size_t kMaxResponseBytes = 1024u * 1024u;
-
-struct WinHttpHandle {
-    HINTERNET value = nullptr;
-    WinHttpHandle() = default;
-    WinHttpHandle(const WinHttpHandle&) = delete;
-    WinHttpHandle& operator=(const WinHttpHandle&) = delete;
-    ~WinHttpHandle() {
-        if (value) WinHttpCloseHandle(value);
-    }
-};
 
 std::wstring Utf8ToWide(const std::string& text) {
     if (text.empty()) return L"";
@@ -96,6 +84,36 @@ bool FindJsonString(const std::string& json, const char* key,
     return false;
 }
 
+// 找到与 open_pos 处开括号配对的闭括号，忽略字符串内的括号。
+std::size_t FindClosingBracket(const std::string& text, std::size_t open_pos,
+                               char open, char close) {
+    int depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+    for (std::size_t pos = open_pos; pos < text.size(); ++pos) {
+        const char ch = text[pos];
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch == '\\') {
+                escaped = true;
+            } else if (ch == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            in_string = true;
+        } else if (ch == open) {
+            ++depth;
+        } else if (ch == close) {
+            --depth;
+            if (depth == 0) return pos;
+        }
+    }
+    return std::string::npos;
+}
+
 std::vector<unsigned long long> ParseNumericComponents(
     const std::wstring& text) {
     std::vector<unsigned long long> parts;
@@ -127,13 +145,17 @@ bool IsWebUrl(const std::wstring& url) {
     return url.rfind(L"https://", 0) == 0 || url.rfind(L"http://", 0) == 0;
 }
 
-UpdateCheckResult NetworkFailure(const std::wstring& current,
-                                 const std::wstring& message) {
-    UpdateCheckResult result;
-    result.status = UpdateCheckResult::Status::NetworkError;
-    result.current_version = current;
-    result.message = message;
-    return result;
+bool EndsWithInsensitive(const std::wstring& text, const std::wstring& suffix) {
+    if (suffix.size() > text.size()) return false;
+    const std::size_t offset = text.size() - suffix.size();
+    for (std::size_t i = 0; i < suffix.size(); ++i) {
+        wchar_t left = text[offset + i];
+        wchar_t right = suffix[i];
+        if (left >= L'A' && left <= L'Z') left = left - L'A' + L'a';
+        if (right >= L'A' && right <= L'Z') right = right - L'A' + L'a';
+        if (left != right) return false;
+    }
+    return true;
 }
 
 }  // namespace
@@ -203,142 +225,93 @@ bool ParseLatestRelease(const std::string& json, std::wstring* tag,
     return true;
 }
 
-UpdateCheckResult CheckLatestRelease(const std::wstring& current_version,
-                                     int timeout_ms) {
-    const std::wstring current = NormalizeVersion(current_version);
-    const int timeout = std::clamp(timeout_ms, 1000, 60000);
+bool ParseReleaseAssets(const std::string& json,
+                        std::vector<ReleaseAsset>* assets) {
+    if (!assets) return false;
+    assets->clear();
 
-    const std::wstring user_agent =
-        L"UsbAssistant/" + std::wstring(kAboutVersion);
+    const std::string key = "\"assets\"";
+    std::size_t pos = json.find(key);
+    if (pos == std::string::npos) return false;
+    pos = json.find(':', pos + key.size());
+    if (pos == std::string::npos) return false;
+    pos = json.find('[', pos);
+    if (pos == std::string::npos) return false;
 
-    WinHttpHandle session;
-    session.value =
-        WinHttpOpen(user_agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                    WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!session.value) {
-        return NetworkFailure(current, L"检查失败：无法初始化网络请求");
-    }
-    WinHttpSetTimeouts(session.value, timeout, timeout, timeout, timeout);
+    const std::size_t array_end = FindClosingBracket(json, pos, '[', ']');
+    if (array_end == std::string::npos) return false;
 
-    URL_COMPONENTS components = {};
-    components.dwStructSize = sizeof(components);
-    components.dwHostNameLength = static_cast<DWORD>(-1);
-    components.dwUrlPathLength = static_cast<DWORD>(-1);
-    components.dwExtraInfoLength = static_cast<DWORD>(-1);
-    if (!WinHttpCrackUrl(kLatestReleaseApiUrl, 0, 0, &components) ||
-        !components.lpszHostName) {
-        return NetworkFailure(current, L"检查失败：更新地址无效");
-    }
-    const std::wstring host(components.lpszHostName,
-                            components.dwHostNameLength);
-    std::wstring path(components.lpszUrlPath, components.dwUrlPathLength);
-    if (components.dwExtraInfoLength > 0 && components.lpszExtraInfo) {
-        path.append(components.lpszExtraInfo, components.dwExtraInfoLength);
-    }
+    std::size_t cursor = pos + 1;
+    while (cursor < array_end) {
+        const std::size_t open = json.find('{', cursor);
+        if (open == std::string::npos || open >= array_end) break;
+        const std::size_t close = FindClosingBracket(json, open, '{', '}');
+        if (close == std::string::npos || close > array_end) break;
 
-    WinHttpHandle connection;
-    connection.value = WinHttpConnect(session.value, host.c_str(),
-                                      components.nPort, 0);
-    if (!connection.value) {
-        return NetworkFailure(current, L"检查失败：无法连接更新服务器");
+        const std::string object = json.substr(open, close - open + 1);
+        std::string name_utf8;
+        std::string url_utf8;
+        if (FindJsonString(object, "name", &name_utf8) &&
+            FindJsonString(object, "browser_download_url", &url_utf8)) {
+            ReleaseAsset asset;
+            asset.name = Utf8ToWide(name_utf8);
+            asset.download_url = Utf8ToWide(url_utf8);
+            if (!asset.name.empty() && IsWebUrl(asset.download_url)) {
+                assets->push_back(std::move(asset));
+            }
+        }
+        cursor = close + 1;
     }
+    return !assets->empty();
+}
 
-    WinHttpHandle request;
-    request.value = WinHttpOpenRequest(
-        connection.value, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER,
-        WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
-    if (!request.value) {
-        return NetworkFailure(current, L"检查失败：无法创建更新请求");
-    }
-
-    const std::wstring headers =
-        L"Accept: application/vnd.github+json\r\n"
-        L"User-Agent: " +
-        user_agent + L"\r\nX-GitHub-Api-Version: 2022-11-28\r\n";
-    if (!WinHttpAddRequestHeaders(
-            request.value, headers.c_str(), static_cast<DWORD>(-1),
-            WINHTTP_ADDREQ_FLAG_ADD | WINHTTP_ADDREQ_FLAG_REPLACE)) {
-        return NetworkFailure(current, L"检查失败：无法设置请求头");
-    }
-
-    if (!WinHttpSendRequest(request.value, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
-        !WinHttpReceiveResponse(request.value, nullptr)) {
-        return NetworkFailure(current,
-                              L"检查失败：网络不可用或请求超时，请稍后重试");
-    }
-
-    DWORD status = 0;
-    DWORD status_size = sizeof(status);
-    if (!WinHttpQueryHeaders(
-            request.value,
-            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-            WINHTTP_HEADER_NAME_BY_INDEX, &status, &status_size,
-            WINHTTP_NO_HEADER_INDEX)) {
-        return NetworkFailure(current, L"检查失败：无法读取服务器响应");
-    }
-    if (status != 200) {
-        return NetworkFailure(current, L"检查失败：更新服务器返回 HTTP " +
-                                           std::to_wstring(status));
-    }
+ReleaseFetchStatus FetchLatestRelease(LatestRelease* release,
+                                      std::wstring* error,
+                                      int timeout_ms) {
+    if (!release) return ReleaseFetchStatus::NetworkError;
+    *release = LatestRelease{};
 
     std::string body;
-    bool read_ok = true;
-    for (;;) {
-        DWORD available = 0;
-        if (!WinHttpQueryDataAvailable(request.value, &available)) {
-            read_ok = false;
-            break;
-        }
-        if (available == 0) break;
-        const std::size_t offset = body.size();
-        const std::size_t room = kMaxResponseBytes - offset;
-        if (room == 0) break;
-        const DWORD want = static_cast<DWORD>(
-            std::min<std::size_t>(available, room));
-        body.resize(offset + want);
-        DWORD read = 0;
-        if (!WinHttpReadData(request.value, body.data() + offset, want,
-                             &read)) {
-            read_ok = false;
-            break;
-        }
-        body.resize(offset + read);
-        if (read == 0) break;
-    }
-    if (!read_ok) {
-        return NetworkFailure(current, L"检查失败：读取更新信息中断");
+    if (!http::GetText(kLatestReleaseApiUrl, timeout_ms, &body, error)) {
+        return ReleaseFetchStatus::NetworkError;
     }
 
-    std::wstring tag;
-    std::wstring url;
-    std::wstring parse_error;
-    if (!ParseLatestRelease(body, &tag, &url, &parse_error)) {
-        UpdateCheckResult result;
-        result.status = UpdateCheckResult::Status::ParseError;
-        result.current_version = current;
-        result.message = L"检查失败：无法解析更新信息";
-        return result;
+    LatestRelease parsed;
+    if (!ParseLatestRelease(body, &parsed.tag, &parsed.html_url, error)) {
+        return ReleaseFetchStatus::ParseError;
     }
+    parsed.version = NormalizeVersion(parsed.tag);
+    if (ParseNumericComponents(parsed.version).empty()) {
+        if (error) *error = L"版本号格式无效";
+        return ReleaseFetchStatus::ParseError;
+    }
+    ParseReleaseAssets(body, &parsed.assets);
 
-    const std::wstring latest = NormalizeVersion(tag);
-    UpdateCheckResult result;
-    result.current_version = current;
-    result.latest_version = latest;
-    result.release_url = std::move(url);
-    if (ParseNumericComponents(latest).empty()) {
-        result.status = UpdateCheckResult::Status::ParseError;
-        result.message = L"检查失败：无法解析更新信息";
-        return result;
+    USB_LOG_INFO(L"update", L"最新 release：%s，资产 %llu 个",
+                 parsed.version.c_str(),
+                 static_cast<unsigned long long>(parsed.assets.size()));
+    *release = std::move(parsed);
+    return ReleaseFetchStatus::Ok;
+}
+
+std::wstring ReleaseAssetSuffix(const std::wstring& config_label,
+                                const std::wstring& arch_label) {
+    return L"-" + config_label + L"-" + arch_label + L".zip";
+}
+
+bool SelectReleaseAsset(const LatestRelease& release,
+                        const std::wstring& config_label,
+                        const std::wstring& arch_label, ReleaseAsset* asset) {
+    if (!asset) return false;
+    const std::wstring suffix = ReleaseAssetSuffix(config_label, arch_label);
+    for (const ReleaseAsset& candidate : release.assets) {
+        if (EndsWithInsensitive(candidate.name, suffix) &&
+            IsWebUrl(candidate.download_url)) {
+            *asset = candidate;
+            return true;
+        }
     }
-    if (CompareVersions(current, latest) >= 0) {
-        result.status = UpdateCheckResult::Status::UpToDate;
-        result.message = L"已是最新版本（v" + latest + L"）";
-    } else {
-        result.status = UpdateCheckResult::Status::UpdateAvailable;
-        result.message = L"发现新版本 v" + latest;
-    }
-    return result;
+    return false;
 }
 
 }  // namespace usb

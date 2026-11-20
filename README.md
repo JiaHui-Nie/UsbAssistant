@@ -96,11 +96,12 @@ cmake --build build --config Release
 ctest --test-dir build --output-on-failure
 ```
 
-产物：
+产物（仓库根目录只保留一个 `build`；x86 使用 `build/x86` 子目录）：
 
-- MinGW：`build/bin/UsbAssistant.exe`
-- MSVC：`build/bin/Release/UsbAssistant.exe`
-- 测试（开启 `USBASSISTANT_BUILD_TESTS` 时）：`build/bin/usbassistant_tests.exe`
+- MinGW（单配置）：`build/UsbAssistant.exe`、`build/UsbAssistantUpdater.exe`
+- MSVC x64：`build/Release/UsbAssistant.exe`、`build/Release/UsbAssistantUpdater.exe`；Debug 在 `build/Debug/`
+- MSVC x86：`build/x86/Release/` 与 `build/x86/Debug/`（配置命令为 `cmake -S . -B build/x86 -G "Visual Studio 17 2022" -A Win32`）
+- 测试（开启 `USBASSISTANT_BUILD_TESTS` 时）：与 exe 同目录，如 `build/Release/usbassistant_tests.exe`
 
 ## 使用
 

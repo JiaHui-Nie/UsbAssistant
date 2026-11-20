@@ -44,6 +44,11 @@ void DrawEjectGlyph(ID2D1RenderTarget* target, ID2D1SolidColorBrush* brush,
                     float center_x, float center_y, float size,
                     const D2D1_COLOR_F& color);
 
+// 向上箭头：升级器专用图形，与程序图标一致。
+void DrawUpgradeGlyph(ID2D1RenderTarget* target, ID2D1SolidColorBrush* brush,
+                      float center_x, float center_y, float size,
+                      const D2D1_COLOR_F& color);
+
 void DrawShieldGlyph(ID2D1RenderTarget* target, ID2D1SolidColorBrush* brush,
                      float center_x, float center_y, float size,
                      const D2D1_COLOR_F& shield_color,

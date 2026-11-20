@@ -19,6 +19,7 @@
 #include "ui/canvas.h"
 #include "ui/edge_bar.h"
 #include "ui/main_view.h"
+#include "ui/message_dialog.h"
 #include "ui/settings_window.h"
 #include "ui/text.h"
 #include "ui/theme.h"
@@ -56,8 +57,9 @@ private:
     void ApplySettings(const Settings& settings);
     void ShowSettings();
     void ShowAbout();
-    void StartUpdateCheck(bool silent);
-    void ShowUpdateBalloon(const std::wstring& latest_version);
+    // 启动独立升级器；autocheck 表示只在新版本出现时才弹出窗口。
+    void LaunchUpdater(bool autocheck);
+    void ShowUpdaterLaunchError();
 
     // 设备
     DeviceFilter CurrentFilter() const;
@@ -125,6 +127,7 @@ private:
     HINSTANCE instance_ = nullptr;
     HWND hwnd_ = nullptr;
     UINT taskbar_created_message_ = 0;
+    UINT exit_request_message_ = 0;
     bool com_initialized_ = false;
     bool start_hidden_ = false;
     bool in_tray_ = false;
@@ -138,6 +141,7 @@ private:
     ui::MainView view_;
     ui::SettingsWindow settings_window_;
     ui::AboutWindow about_window_;
+    ui::MessageDialog update_error_dialog_;
     ui::EdgeBar edge_bar_;
 
     ID2D1Factory* d2d_ = nullptr;
@@ -181,17 +185,11 @@ private:
 
     Worker scan_worker_;
     Worker action_worker_;
-    Worker update_worker_;
     std::shared_ptr<PostTarget> post_target_ = std::make_shared<PostTarget>();
     bool scan_in_flight_ = false;
     bool scan_pending_ = false;
     bool action_busy_ = false;
     std::uint64_t action_generation_ = 0;
-
-    // 更新检查：结果回传后只在 generation 匹配时更新界面。
-    bool update_busy_ = false;
-    bool update_silent_ = false;
-    std::uint64_t update_generation_ = 0;
 
     float dpi_ = 96.0f;
     float scale_ = 1.0f;
