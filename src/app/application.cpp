@@ -2251,7 +2251,7 @@ LRESULT Application::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
                          static_cast<int>(result.status),
                          result.latest_version.c_str());
 
-            if (kDebugBuild) {
+            if (kDevBuild) {
                 // 开发版：每次检查都必须让用户看到结果（含启动自动检查）。
                 if (!about_window_.IsOpen()) ShowAbout();
                 about_window_.SetUpdateResult(result);

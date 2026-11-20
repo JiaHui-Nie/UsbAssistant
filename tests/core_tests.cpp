@@ -312,14 +312,14 @@ void TestVersionAndUpdate() {
     using namespace usb;
     CHECK_EQ(NormalizeVersion(L" v1.2.3 "), L"1.2.3");
     CHECK_EQ(NormalizeVersion(L"V2.0"), L"2.0");
-    CHECK_EQ(NormalizeVersion(L"1.0.0"), L"1.0.0");
+    CHECK_EQ(NormalizeVersion(L"1.1.1"), L"1.1.1");
 
     CHECK(CompareVersions(L"1.2.3", L"v1.2.3") == 0);
     CHECK(CompareVersions(L"1.2.3", L"1.2.4") < 0);
     CHECK(CompareVersions(L"1.10.0", L"1.9.9") > 0);
     CHECK(CompareVersions(L"2.0", L"2.0.0") == 0);
     CHECK(CompareVersions(L"1.2.3", L"1.2.3-beta") == 0);
-    CHECK(CompareVersions(L"abc", L"1.0.0") == 0);  // 无法比较时按相等处理
+    CHECK(CompareVersions(L"abc", L"1.1.1") == 0);  // 无法比较时按相等处理
 
     const std::string json =
         R"({"tag_name":"v1.4.0","html_url":)"
@@ -338,16 +338,16 @@ void TestVersionAndUpdate() {
         R"({"tag_name":"","html_url":"https://github.com/x/y"})", &tag, &url,
         &error));
     CHECK(!ParseLatestRelease(
-        R"({"tag_name":"v1.0.0","html_url":"file:///etc/passwd"})", &tag,
+        R"({"tag_name":"v1.1.1","html_url":"file:///etc/passwd"})", &tag,
         &url, &error));
-    CHECK(!ParseLatestRelease(R"({"tag_name":"v1.0.0"})", &tag, &url, &error));
+    CHECK(!ParseLatestRelease(R"({"tag_name":"v1.1.1"})", &tag, &url, &error));
 
     CHECK(!std::wstring(kAppVersion).empty());
-#if defined(USBASSISTANT_DEBUG_BUILD)
-    // 关于界面：Debug 只显示 dev。
+#if defined(USBASSISTANT_DEBUG_BUILD) || defined(USBASSISTANT_DEV_BUILD)
+    // 开发版：关于界面统一只显示 dev。
     CHECK_EQ(std::wstring(kAboutVersion), L"dev");
 #else
-    // 关于界面：Release 只显示纯数字版本号。
+    // 正式版：关于界面只显示纯数字版本号。
     const std::wstring about_version = kAboutVersion;
     CHECK(about_version.find(L'v') == std::wstring::npos);
     CHECK(about_version.find(L'-') == std::wstring::npos);

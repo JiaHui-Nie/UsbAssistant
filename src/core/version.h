@@ -4,7 +4,7 @@
 #pragma once
 
 #ifndef USBASSISTANT_VERSION
-#define USBASSISTANT_VERSION L"0.0.0"
+#define USBASSISTANT_VERSION L"1.1.1"
 #endif
 
 #ifndef USBASSISTANT_REPO_URL
@@ -13,18 +13,15 @@
 
 namespace usb {
 
-// 用于比较/请求头的纯数字版本，如 "1.2.3"。
+// 用于比较与请求头的纯数字版本，如 "1.2.3"；开发版也不改变它。
 inline constexpr const wchar_t* kAppVersion = USBASSISTANT_VERSION;
 
-#if defined(USBASSISTANT_DEBUG_BUILD)
-// Debug 构建不伪装成正式版本号，只说明是开发版。
-// 关于界面程序名下方显示的版本：Debug 只显示 dev。
+#if defined(USBASSISTANT_DEBUG_BUILD) || defined(USBASSISTANT_DEV_BUILD)
+// 开发版（Debug、分支、脏工作区、无 tag）对外只显示 dev，不带数字或 hash。
 inline constexpr const wchar_t* kAboutVersion = L"dev";
-inline constexpr bool kDebugBuild = true;
 #else
-// 关于界面程序名下方显示的版本：Release 只显示纯数字版本号，例如 1.0.0。
+// 正式版（tag 正好在 HEAD）：只显示纯数字版本号，例如 1.1.1。
 inline constexpr const wchar_t* kAboutVersion = USBASSISTANT_VERSION;
-inline constexpr bool kDebugBuild = false;
 #endif
 
 #if defined(USBASSISTANT_DEV_BUILD)

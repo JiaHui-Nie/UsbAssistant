@@ -376,7 +376,7 @@ void AboutWindow::Paint() {
                 status_color = palette_.danger;
                 break;
         }
-    } else if (kDebugBuild) {
+    } else if (kDevBuild) {
         status_text = L"开发版：每次检查更新都会显示结果。";
     } else {
         status_text = L"点击「检查更新」获取最新版本。";

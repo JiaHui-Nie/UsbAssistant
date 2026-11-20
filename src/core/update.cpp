@@ -209,8 +209,7 @@ UpdateCheckResult CheckLatestRelease(const std::wstring& current_version,
     const int timeout = std::clamp(timeout_ms, 1000, 60000);
 
     const std::wstring user_agent =
-        L"UsbAssistant/" +
-        std::wstring(kAppVersion[0] ? kAppVersion : L"unknown");
+        L"UsbAssistant/" + std::wstring(kAboutVersion);
 
     WinHttpHandle session;
     session.value =
