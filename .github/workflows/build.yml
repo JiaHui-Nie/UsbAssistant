@@ -80,11 +80,37 @@ jobs:
           CONFIG: ${{ matrix.config }}
           ARCH: ${{ matrix.arch }}
         run: |
-          headers="$(dumpbin /nologo /headers "$BUILD_DIR/bin/$CONFIG/UsbAssistant.exe")"
+          # 注意：dumpbin 的选项必须写成 -nologo/-headers。
+          # 在 Git Bash 里以 / 开头的参数会被 MSYS 当作路径改写，
+          # dumpbin 会因此返回 157（已在本机 Git Bash 复现）。
+          exe="$BUILD_DIR/bin/$CONFIG/UsbAssistant.exe"
+          if ! command -v dumpbin >/dev/null 2>&1; then
+            echo "::error::architecture check: dumpbin not found in PATH"
+            exit 1
+          fi
+          echo "dumpbin: $(command -v dumpbin)"
+          if [[ ! -f "$exe" ]]; then
+            echo "::error::architecture check: executable not found: $exe"
+            exit 2
+          fi
+          echo "checking: $exe ($(stat -c %s "$exe") bytes)"
+          headers="$(dumpbin -nologo -headers "$exe")" || {
+            status=$?
+            echo "::error::architecture check: dumpbin failed (exit $status)"
+            exit 3
+          }
+          echo "machine lines:"
+          printf '%s\n' "$headers" | grep "machine (" || true
           if [[ "$ARCH" == "x86" ]]; then
-            grep -q "machine (x86)" <<< "$headers"
+            expected="machine (x86)"
           else
-            grep -q "machine (x64)" <<< "$headers"
+            expected="machine (x64)"
+          fi
+          if printf '%s\n' "$headers" | grep -Fq "$expected"; then
+            echo "architecture check passed: $ARCH -> $expected"
+          else
+            echo "::error::architecture check: expected '$expected' for $ARCH"
+            exit 4
           fi
 
       - name: Name release asset
