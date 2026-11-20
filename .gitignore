@@ -14,7 +14,7 @@ config.ini
 *.suo
 *.swp
 
-#临时文件
+# 临时文件
 .screenshots/
 
 # 系统文件
