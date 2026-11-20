@@ -64,6 +64,7 @@ private:
     void RequestScan(int delay_ms);
     void StartScan();
     void ApplyDevices(std::shared_ptr<const std::vector<Device>> devices);
+    void BringWindowToFrontForDevice();
 
     // 交互
     void OnAction(const ui::ViewAction& action);
@@ -149,6 +150,7 @@ private:
     ULONG shell_notify_id_ = 0;
 
     std::shared_ptr<const std::vector<Device>> devices_;
+    bool has_device_snapshot_ = false;
     std::shared_ptr<const std::vector<Occupant>> occupants_;
     std::uint32_t ejecting_disk_ = 0;
 

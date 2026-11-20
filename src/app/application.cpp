@@ -768,8 +768,26 @@ void Application::StartScan() {
 void Application::ApplyDevices(
     std::shared_ptr<const std::vector<Device>> devices) {
     const bool was_empty = !devices_ || devices_->empty();
+    // 只有出现此前不存在的磁盘才算「新设备到达」；首次扫描不算。
+    bool new_device = false;
+    if (has_device_snapshot_ && devices_) {
+        for (const Device& device : *devices) {
+            bool existed = false;
+            for (const Device& previous : *devices_) {
+                if (previous.disk_number == device.disk_number) {
+                    existed = true;
+                    break;
+                }
+            }
+            if (!existed) {
+                new_device = true;
+                break;
+            }
+        }
+    }
     devices_ = devices ? std::move(devices)
                        : std::make_shared<const std::vector<Device>>();
+    has_device_snapshot_ = true;
     PruneMountedVolumes();
 
     RebuildModel();
@@ -781,10 +799,49 @@ void Application::ApplyDevices(
         if (hwnd_) KillTimer(hwnd_, kTimerEmptyHide);
         empty_hide_armed_ = false;
         if (was_empty && in_tray_) ShowFromTray();
+        if (new_device) {
+            USB_LOG_INFO(L"app", L"新设备到达：count=%zu，尝试前置窗口",
+                         devices_->size());
+            BringWindowToFrontForDevice();
+        }
     }
 
     StartAnimation();
     PaintNow();
+}
+
+void Application::BringWindowToFrontForDevice() {
+    if (!hwnd_ || in_tray_ || edge_collapsed_ || !IsWindowVisible(hwnd_)) {
+        return;
+    }
+    // 「始终置顶」关闭时，仅靠 SetForegroundWindow 可能被系统前台锁拒绝：
+    // 调用进程不是前台进程且用户刚在别处操作时，该调用会返回 FALSE。
+    // SetWindowPos 的 z-order 调整不受这条前台锁限制，因此先临时置顶把
+    // 窗口压到最前，激活尝试结束后立刻恢复非置顶，不长期占用置顶。
+    if (!settings_.top_most) {
+        SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    SetLastError(ERROR_SUCCESS);
+    const BOOL foreground = SetForegroundWindow(hwnd_);
+    const DWORD error = GetLastError();
+    if (!settings_.top_most) {
+        SetWindowPos(hwnd_, HWND_NOTOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+    if (!foreground) {
+        FLASHWINFO flash = {};
+        flash.cbSize = sizeof(flash);
+        flash.hwnd = hwnd_;
+        flash.dwFlags = FLASHW_ALL | FLASHW_TIMERNOFG;
+        flash.uCount = 3;
+        FlashWindowEx(&flash);
+    }
+    USB_LOG_INFO(
+        L"app",
+        L"设备到达前置结果：top_most=%d foreground=%d error=%lu now_foreground=%d",
+        settings_.top_most ? 1 : 0, foreground ? 1 : 0, error,
+        GetForegroundWindow() == hwnd_ ? 1 : 0);
 }
 
 // ---------------------------------------------------------------------------
