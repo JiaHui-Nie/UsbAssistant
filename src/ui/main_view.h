@@ -232,6 +232,11 @@ private:
 
     Hit hovered_;
     Hit pressed_;
+    // 最近一次鼠标移动的位置（屏幕坐标）。设备列表定时刷新会重建布局，
+    // 仅靠索引无法判断指针下还是不是同一个按钮，需要按此位置重新命中。
+    POINT pointer_screen_ = {};
+    bool pointer_inside_ = false;
+    bool hover_revalidate_ = false;
     bool scroll_hover_ = false;
     bool scroll_dragging_ = false;
     float scroll_drag_start_y_ = 0.0f;
@@ -247,6 +252,9 @@ private:
     std::unordered_map<std::wstring, float> hover_volume_;
     float hover_close_ = 0.0f;
     float hover_close_target_ = 0.0f;
+    // 刚移入按钮时悬停动画值仍是 0，仅靠 Animating() 里的差值判断会误判
+    // 为“无需动画”，导致计时器不启动。置位表示下一帧必须推进一次动画。
+    bool hover_anim_pending_ = false;
 };
 
 }  // namespace usb::ui

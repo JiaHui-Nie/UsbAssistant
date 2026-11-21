@@ -183,14 +183,6 @@ void TestStorage() {
              L"\\\\?\\Volume{1}");
     CHECK_EQ(usb::storage::VolumeDisplayName(L'F'), L"F:");
     CHECK_EQ(usb::storage::VolumeDisplayName(0), L"该分区");
-
-    usb::EjectTarget target;
-    target.letter = L'Z';
-    // 盘符 Z: 通常不存在，除非用户恰好挂载了它。
-    const bool present = usb::storage::AnyTargetLetterPresent({target});
-    const DWORD drives = GetLogicalDrives();
-    const bool expected = (drives & (1u << ('z' - 'a'))) != 0;
-    CHECK(present == expected);
 }
 
 void TestHelperArguments() {
@@ -295,11 +287,9 @@ void TestEjectSafety() {
     CHECK(!result.message.empty());
 
     CHECK(usb::FindOccupants({}).empty());
-    CHECK(usb::storage::WaitDiskGone(9999, {}, 0));
-
-    usb::EjectTarget target;
-    target.letter = 0;
-    CHECK(!usb::storage::AnyTargetLetterPresent({target}));
+    // 不存在的磁盘：整盘移除与介质弹出都应立即判定为已消失。
+    CHECK(usb::storage::WaitDiskGone(9999, 0));
+    CHECK(usb::storage::WaitMediaGone(9999, 0));
 }
 
 void TestLogFormat() {

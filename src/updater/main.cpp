@@ -33,12 +33,19 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
     int result = 1;
     {
         usb::app::UpdaterApp app;
-        if (app.Initialize(instance, autocheck)) {
-            result = app.Run();
-        } else {
-            MessageBoxW(nullptr,
-                        L"无法初始化升级器（Direct2D / DirectWrite）。",
-                        L"检查更新", MB_ICONERROR | MB_OK);
+        switch (app.Initialize(instance, autocheck)) {
+            case usb::app::UpdaterApp::InitResult::Ok:
+                result = app.Run();
+                break;
+            case usb::app::UpdaterApp::InitResult::AlreadyRunning:
+                // 请求已转交给现有实例：静默退出，不再新开窗口。
+                result = 0;
+                break;
+            case usb::app::UpdaterApp::InitResult::Failed:
+                MessageBoxW(nullptr,
+                            L"无法初始化升级器（Direct2D / DirectWrite）。",
+                            L"检查更新", MB_ICONERROR | MB_OK);
+                break;
         }
     }
     usb::log::Shutdown();

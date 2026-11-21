@@ -31,7 +31,8 @@ public:
     bool IsOpen() const;
 
     // 与主窗口的「始终置顶」保持一致。
-    void SetTopMost(bool enabled);
+    // 打开时临时置顶并激活，随后恢复普通层级；不做永久置顶。
+    void RaiseToFront();
     void SetPalette(const Palette& palette);
 
 private:

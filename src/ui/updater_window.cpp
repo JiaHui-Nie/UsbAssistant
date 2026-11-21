@@ -42,11 +42,9 @@ UpdaterWindow::~UpdaterWindow() { ReleaseTarget(); }
 bool UpdaterWindow::Open(HINSTANCE instance, HWND reference, bool visible,
                          ID2D1Factory* d2d, IDWriteFactory* dwrite,
                          const Fonts* fonts, const Palette& palette,
-                         bool top_most, ActionHandler on_update,
-                         CloseHandler on_close) {
+                         ActionHandler on_update, CloseHandler on_close) {
     if (!d2d || !dwrite || !fonts) return false;
     palette_ = palette;
-    top_most_ = top_most;
     on_update_ = std::move(on_update);
     on_close_ = std::move(on_close);
 
@@ -62,9 +60,12 @@ bool UpdaterWindow::Open(HINSTANCE instance, HWND reference, bool visible,
         window_class.lpfnWndProc = &UpdaterWindow::WndProc;
         window_class.hInstance = instance;
         window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        window_class.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(1));
-        window_class.hIconSm = window_class.hIcon;
-        window_class.lpszClassName = L"UsbAssistantUpdaterWindow";
+        // 升级器现在有任务栏按钮，使用自己的 updater.ico，避免和主程序混淆。
+        window_class.hIcon = static_cast<HICON>(LoadImageW(
+            instance, MAKEINTRESOURCEW(1), IMAGE_ICON, 32, 32, 0));
+        window_class.hIconSm = static_cast<HICON>(LoadImageW(
+            instance, MAKEINTRESOURCEW(1), IMAGE_ICON, 16, 16, 0));
+        window_class.lpszClassName = kUpdaterWindowClass;
         RegisterClassExW(&window_class);
         registered = true;
     }
@@ -77,9 +78,11 @@ bool UpdaterWindow::Open(HINSTANCE instance, HWND reference, bool visible,
     const POINT origin =
         CenterInWorkArea(ReferenceWorkArea(reference), width, height);
 
-    hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW, L"UsbAssistantUpdaterWindow",
-                            L"检查更新", WS_POPUP, origin.x, origin.y, width,
-                            height, nullptr, nullptr, instance, this);
+    // 普通顶层窗口（不再是 WS_EX_TOOLWINDOW）：拥有独立任务栏按钮，
+    // 并使用 updater.ico 与主程序区分。窗口始终置顶。
+    hwnd_ = CreateWindowExW(WS_EX_TOPMOST, kUpdaterWindowClass, L"检查更新",
+                            WS_POPUP, origin.x, origin.y, width, height,
+                            nullptr, nullptr, instance, this);
     if (!hwnd_) return false;
 
     const int radius = static_cast<int>(std::lround(16.0f * scale_));
@@ -88,10 +91,9 @@ bool UpdaterWindow::Open(HINSTANCE instance, HWND reference, bool visible,
                  FALSE);
     const BOOL dark = palette_.dark ? TRUE : FALSE;
     DwmSetWindowAttribute(hwnd_, 20, &dark, sizeof(dark));
-    if (top_most) {
-        SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE);
-    }
+    // 始终处于置顶层，与主程序设置无关。
+    SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
     if (visible) Show();
     return true;
@@ -104,14 +106,26 @@ void UpdaterWindow::Close() {
 void UpdaterWindow::Show() {
     if (!hwnd_) return;
     ShowWindow(hwnd_, SW_SHOW);
-    // 置顶层级相同的窗口之间按激活顺序排 z 序：仅靠创建时的置顶和
-    // SetForegroundWindow，跨进程时可能因前台锁失败而压在置顶的主程序
-    // 关于窗口下面。显示后再次置顶，确保进入置顶层最上方。
-    if (top_most_) {
-        SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    }
+    // 启动即前置：先临时置顶。SetWindowPos 的 z 序调整不受前台锁限制，
+    // 即使后面激活失败，窗口也已经在所有非置顶窗口之前。
+    SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    // 系统只允许前台进程激活窗口；附加到当前前台窗口的输入线程后再调用
+    // SetForegroundWindow，是绕开前台锁的常规做法。
+    const HWND foreground = GetForegroundWindow();
+    const DWORD foreground_thread =
+        foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
+    const DWORD current_thread = GetCurrentThreadId();
+    const bool attached =
+        foreground_thread != 0 && foreground_thread != current_thread &&
+        AttachThreadInput(foreground_thread, current_thread, TRUE) != FALSE;
     SetForegroundWindow(hwnd_);
+    if (attached) {
+        AttachThreadInput(foreground_thread, current_thread, FALSE);
+    }
+    // 升级器始终置顶：前置完成后直接回到置顶层，不再跟随主程序设置。
+    SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -427,6 +441,15 @@ LRESULT CALLBACK UpdaterWindow::WndProc(HWND hwnd, UINT message,
 
 LRESULT UpdaterWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
                                      LPARAM lparam) {
+    // 单实例转交：另一个升级器进程启动后通过注册消息唤醒本实例。
+    static const UINT wake_message =
+        RegisterWindowMessageW(kUpdaterWakeMessageName);
+    if (wake_message != 0 && message == wake_message) {
+        if (on_wake_) {
+            on_wake_(wparam == kUpdaterWakeAutocheck);
+        }
+        return 0;
+    }
     switch (message) {
         case WM_PAINT: {
             PAINTSTRUCT paint = {};

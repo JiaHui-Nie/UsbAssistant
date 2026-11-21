@@ -592,12 +592,43 @@ void Application::UpdateTheme() {
 
 void Application::ApplyTopMost() {
     if (!hwnd_) return;
-    // 主窗口的置顶只由「始终置顶」决定，不再因为设置窗口打开而让出。
-    // 设置窗口与主窗口一起置顶，并重新压到主窗口之上，避免被主窗口盖住。
+    // 只决定主窗口自身的层级。设置/关于窗口不再跟随置顶：它们打开时
+    // 临时置顶并激活，随后恢复普通层级；主窗口可以遮挡它们。
     SetWindowPos(hwnd_, settings_.top_most ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0,
                  0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    settings_window_.SetTopMost(settings_.top_most);
-    about_window_.SetTopMost(settings_.top_most);
+}
+
+void Application::RaiseMainWindow(bool activate) {
+    if (!hwnd_) return;
+    if (settings_.top_most) {
+        // 已置顶时窗口本身就在最上层，保持原有行为（不额外抢焦点）。
+        ApplyTopMost();
+        return;
+    }
+    // 临时置顶不受前台锁限制，保证即使激活失败窗口也在所有窗口之前。
+    SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    if (activate) ActivateForeground();
+    SetWindowPos(hwnd_, HWND_NOTOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+void Application::ActivateForeground() {
+    if (!hwnd_) return;
+    // 系统只允许前台进程激活窗口；当前前台窗口可能属于其他进程，
+    // 先附加到其输入线程再调用 SetForegroundWindow，是绕开前台锁
+    // 的常规做法。
+    const HWND foreground = GetForegroundWindow();
+    const DWORD foreground_thread =
+        foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
+    const DWORD current_thread = GetCurrentThreadId();
+    const bool attached =
+        foreground_thread != 0 && foreground_thread != current_thread &&
+        AttachThreadInput(foreground_thread, current_thread, TRUE) != FALSE;
+    SetForegroundWindow(hwnd_);
+    if (attached) {
+        AttachThreadInput(foreground_thread, current_thread, FALSE);
+    }
 }
 
 void Application::ApplyRefreshTimer() {
@@ -658,7 +689,7 @@ void Application::ApplySettings(const Settings& settings) {
     store_.Save(settings_);
 
     if (!settings_.edge_collapse && edge_collapsed_) {
-        RestoreFromEdgeBar();
+        RestoreFromEdgeBar(false);
     }
 
     if (filter_changed) RequestScan(0);
@@ -674,13 +705,11 @@ void Application::ShowSettings() {
     settings_window_.Open(
         instance_, hwnd_, d2d_, dwrite_, &fonts_, palette_, settings_,
         [this](const Settings& settings) { ApplySettings(settings); });
-    ApplyTopMost();
 }
 
 void Application::ShowAbout() {
     about_window_.Open(instance_, hwnd_, d2d_, dwrite_, &fonts_, palette_,
                        kAboutVersion, [this]() { LaunchUpdater(false); });
-    ApplyTopMost();
 }
 
 void Application::LaunchUpdater(bool autocheck) {
@@ -695,10 +724,11 @@ void Application::LaunchUpdater(bool autocheck) {
 }
 
 void Application::ShowUpdaterLaunchError() {
+    // 升级器窗口现在始终置顶，失败提示保持一致，避免被置顶的主窗口挡住。
     if (!update_error_dialog_.Open(
             instance_, hwnd_, d2d_, dwrite_, &fonts_, palette_, L"U 盘助手",
             L"无法打开升级器，重新下载应用程序可能会解决问题。", L"好的",
-            settings_.top_most)) {
+            true)) {
         USB_LOG_ERROR(L"app", L"无法显示升级器启动失败提示");
     }
 }
@@ -775,9 +805,11 @@ void Application::ApplyDevices(
     } else {
         if (hwnd_) KillTimer(hwnd_, kTimerEmptyHide);
         empty_hide_armed_ = false;
-        if (was_empty && in_tray_) ShowFromTray();
+        // 收起到托盘期间（× 选择「隐藏窗口」）仍要响应设备插入：不仅
+        // 从空列表变为有设备时显示，已有设备快照时插入新设备同样显示。
+        if (in_tray_ && (was_empty || new_device)) ShowFromTray(false);
         if (new_device) {
-            USB_LOG_INFO(L"app", L"新设备到达：count=%zu，尝试前置窗口",
+            USB_LOG_INFO(L"app", L"新设备到达：count=%zu，把窗口抬到最前",
                          devices_->size());
             BringWindowToFrontForDevice();
         }
@@ -791,34 +823,17 @@ void Application::BringWindowToFrontForDevice() {
     if (!hwnd_ || in_tray_ || edge_collapsed_ || !IsWindowVisible(hwnd_)) {
         return;
     }
-    // 「始终置顶」关闭时，仅靠 SetForegroundWindow 可能被系统前台锁拒绝：
-    // 调用进程不是前台进程且用户刚在别处操作时，该调用会返回 FALSE。
-    // SetWindowPos 的 z-order 调整不受这条前台锁限制，因此先临时置顶把
-    // 窗口压到最前，激活尝试结束后立刻恢复非置顶，不长期占用置顶。
-    if (!settings_.top_most) {
-        SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    // 插入设备时主动激活到前台：临时置顶保证 z 序，取得前台激活权限成为
+    // 活动窗口，完成后恢复非置顶；不采用定时保持置顶，也不做任务栏闪烁。
+    if (settings_.top_most) {
+        // 永久置顶保持不变，只额外取得前台激活。
+        ApplyTopMost();
+        ActivateForeground();
+    } else {
+        RaiseMainWindow(true);
     }
-    SetLastError(ERROR_SUCCESS);
-    const BOOL foreground = SetForegroundWindow(hwnd_);
-    const DWORD error = GetLastError();
-    if (!settings_.top_most) {
-        SetWindowPos(hwnd_, HWND_NOTOPMOST, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    }
-    if (!foreground) {
-        FLASHWINFO flash = {};
-        flash.cbSize = sizeof(flash);
-        flash.hwnd = hwnd_;
-        flash.dwFlags = FLASHW_ALL | FLASHW_TIMERNOFG;
-        flash.uCount = 3;
-        FlashWindowEx(&flash);
-    }
-    USB_LOG_INFO(
-        L"app",
-        L"设备到达前置结果：top_most=%d foreground=%d error=%lu now_foreground=%d",
-        settings_.top_most ? 1 : 0, foreground ? 1 : 0, error,
-        GetForegroundWindow() == hwnd_ ? 1 : 0);
+    USB_LOG_INFO(L"app", L"设备到达：窗口已激活到前台（top_most=%d）",
+                 settings_.top_most ? 1 : 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1653,21 +1668,21 @@ void Application::ShowTrayMenu() {
     }
 }
 
-void Application::ShowFromTray() {
+void Application::ShowFromTray(bool activate) {
     if (edge_collapsed_) {
-        RestoreFromEdgeBar();
+        RestoreFromEdgeBar(activate);
         return;
     }
     if (!hwnd_) return;
     if (IsWindowVisible(hwnd_) && !in_tray_) {
-        ApplyTopMost();
+        RaiseMainWindow(activate);
         return;
     }
     in_tray_ = false;
     window_alpha_ = 0.0f;
     PaintNow();
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
-    ApplyTopMost();
+    RaiseMainWindow(activate);
     StartAnimation();
     ArmEmptyHideTimer();
 }
@@ -1799,7 +1814,7 @@ void Application::CollapseToEdgeBar(int edge) {
     edge_bar_.Show(instance_, hwnd_, icon_edge_, x, y, side, palette_.dark);
 }
 
-void Application::RestoreFromEdgeBar() {
+void Application::RestoreFromEdgeBar(bool activate) {
     if (!edge_collapsed_ || !hwnd_) return;
     edge_bar_.Hide();
     edge_bar_.Destroy();
@@ -1845,7 +1860,7 @@ void Application::RestoreFromEdgeBar() {
     in_tray_ = false;
     window_alpha_ = 1.0f;
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
-    ApplyTopMost();
+    RaiseMainWindow(activate);
     PaintNow();
     StartAnimation();
     if (settings_.position_mode == 1) {

@@ -81,7 +81,7 @@ bool AboutWindow::Open(HINSTANCE instance, HWND owner, ID2D1Factory* d2d,
         dragging_ = false;
         tracking_leave_ = false;
         ShowWindow(hwnd_, SW_SHOW);
-        SetForegroundWindow(hwnd_);
+        RaiseToFront();
         InvalidateRect(hwnd_, nullptr, FALSE);
         return true;
     }
@@ -114,7 +114,7 @@ bool AboutWindow::Open(HINSTANCE instance, HWND owner, ID2D1Factory* d2d,
     const int top =
         work_area.top + ((work_area.bottom - work_area.top) - height) / 2;
 
-    // 不设置 owner：置顶层级由 SetTopMost 与主窗口统一维护。
+    // 不设置 owner：打开时由 RaiseToFront 临时置顶并激活，随后恢复普通层级。
     hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW, L"UsbAssistantAbout", L"关于",
                             WS_POPUP, left, top, width, height, nullptr,
                             nullptr, instance, this);
@@ -128,7 +128,7 @@ bool AboutWindow::Open(HINSTANCE instance, HWND owner, ID2D1Factory* d2d,
     DwmSetWindowAttribute(hwnd_, 20, &dark, sizeof(dark));
 
     ShowWindow(hwnd_, SW_SHOW);
-    SetForegroundWindow(hwnd_);
+    RaiseToFront();
     InvalidateRect(hwnd_, nullptr, FALSE);
     return true;
 }
@@ -139,9 +139,24 @@ void AboutWindow::Close() {
 
 bool AboutWindow::IsOpen() const { return hwnd_ != nullptr; }
 
-void AboutWindow::SetTopMost(bool enabled) {
+void AboutWindow::RaiseToFront() {
     if (!hwnd_) return;
-    SetWindowPos(hwnd_, enabled ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+    // 临时置顶保证 z 序，附加到前台线程后激活，随后恢复普通层级：
+    // 不保留置顶状态，主窗口（即使置顶）可以重新遮挡本窗口。
+    SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    const HWND foreground = GetForegroundWindow();
+    const DWORD foreground_thread =
+        foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
+    const DWORD current_thread = GetCurrentThreadId();
+    const bool attached =
+        foreground_thread != 0 && foreground_thread != current_thread &&
+        AttachThreadInput(foreground_thread, current_thread, TRUE) != FALSE;
+    SetForegroundWindow(hwnd_);
+    if (attached) {
+        AttachThreadInput(foreground_thread, current_thread, FALSE);
+    }
+    SetWindowPos(hwnd_, HWND_NOTOPMOST, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 

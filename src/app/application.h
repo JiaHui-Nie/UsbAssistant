@@ -53,6 +53,13 @@ private:
     void OnTimer(UINT_PTR timer);
     void UpdateTheme();
     void ApplyTopMost();
+    // 把主窗口压到最前。activate=true 用于用户主动唤出（托盘/边缘条点
+    // 击），会尝试取得前台焦点；false 用于设备插入等被动场景，只调整
+    // z 序，不抢占用户当前输入焦点。
+    void RaiseMainWindow(bool activate);
+    // 取得前台激活权限：附加到当前前台窗口的输入线程后调用
+    // SetForegroundWindow，是绕开前台锁的常规做法。
+    void ActivateForeground();
     void ApplyRefreshTimer();
     void ApplySettings(const Settings& settings);
     void ShowSettings();
@@ -106,14 +113,14 @@ private:
     void AddTrayIcon();
     void RemoveTrayIcon();
     void ShowTrayMenu();
-    void ShowFromTray();
+    void ShowFromTray(bool activate = true);
     void HideToTray();
     void ArmEmptyHideTimer();
 
     // 边缘悬浮条
     void CheckDropPosition();
     void CollapseToEdgeBar(int edge);
-    void RestoreFromEdgeBar();
+    void RestoreFromEdgeBar(bool activate = true);
 
     // 位置
     POINT DefaultWindowOrigin(int width_px, int height_px) const;

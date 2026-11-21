@@ -391,7 +391,7 @@ ForceOutcome ForceEject(std::uint32_t disk_number,
         return outcome;
     }
     if (pnp.ok) {
-        const bool gone = storage::WaitDiskGone(disk_number, targets, 4000);
+        const bool gone = storage::WaitDiskGone(disk_number, 4000);
         USB_LOG_INFO(L"eject", L"强制路径：PnP 移除成功，设备消失=%d",
                      gone ? 1 : 0);
         if (gone) {
@@ -477,7 +477,7 @@ EjectResult EjectDevice(std::uint32_t disk_number, const std::wstring& title,
     // 1. 首选 PnP 移除，与资源管理器「弹出」走同一条系统路径。
     const PnpOutcome pnp = TryPnpEject(disk_number, targets.front().volume_path);
     if (pnp.ok) {
-        const bool gone = storage::WaitDiskGone(disk_number, targets, 5000);
+        const bool gone = storage::WaitDiskGone(disk_number, 5000);
         USB_LOG_INFO(L"eject", L"PnP 移除后等待设备消失：%d", gone ? 1 : 0);
         if (gone) {
             return Result(EjectStatus::Ok, SuccessMessage(title));
@@ -499,16 +499,19 @@ EjectResult EjectDevice(std::uint32_t disk_number, const std::wstring& title,
     // 2. 介质弹出：读卡器与部分 U 盘只支持这一条路径。
     const MediaOutcome media = MediaEject(targets.front().volume_path);
     if (media.ok) {
-        const bool gone = storage::WaitDiskGone(disk_number, targets, 3000);
-        USB_LOG_INFO(L"eject", L"介质弹出后等待设备消失：%d", gone ? 1 : 0);
+        // 介质弹出语义：读卡器等设备本体可以保留，只要求介质确实不存在，
+        // 不能再用盘符消失来判断。
+        const bool gone = storage::WaitMediaGone(disk_number, 3000);
+        USB_LOG_INFO(L"eject", L"介质弹出后等待介质消失：%d", gone ? 1 : 0);
         if (gone) {
             return Result(EjectStatus::Ok, SuccessMessage(title));
         }
         return Result(
             EjectStatus::Failed,
             device +
-                L" 未能真正断开：介质已卸载但设备仍在。Windows 可能把该移动"
-                L"硬盘识别为固定磁盘，可在设备属性中启用「快速删除」后重试。");
+                L" 未能真正弹出介质：系统仍检测到介质存在。Windows 可能把该"
+                L"移动硬盘识别为固定磁盘，可在设备属性中启用「快速删除」后"
+                L"重试。");
     }
 
     // 连设备节点都找不到：设备多半已经拔出，直接按不在位处理。

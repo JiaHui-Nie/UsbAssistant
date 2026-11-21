@@ -21,6 +21,10 @@ constexpr UINT kMessageInstallStage = WM_APP + 3;
 
 constexpr wchar_t kPumpClass[] = L"UsbAssistantUpdaterPump";
 
+// 单实例互斥体名称：Local 命名空间按登录会话隔离，符合桌面程序语义。
+constexpr wchar_t kUpdaterMutexName[] =
+    L"Local\\UsbAssistant.Updater.SingleInstance";
+
 struct CheckPayload {
     int status = 0;
     bool update_available = false;
@@ -130,22 +134,40 @@ UpdaterApp::~UpdaterApp() {
         d2d_ = nullptr;
     }
     if (com_initialized_) CoUninitialize();
+    if (instance_mutex_) {
+        CloseHandle(instance_mutex_);
+        instance_mutex_ = nullptr;
+    }
 }
 
-bool UpdaterApp::Initialize(HINSTANCE instance, bool autocheck) {
+UpdaterApp::InitResult UpdaterApp::Initialize(HINSTANCE instance,
+                                              bool autocheck) {
     autocheck_ = autocheck;
+
+    // 单实例：重复启动不再创建窗口，把请求转交给已有实例后静默退出。
+    // 互斥体只负责覆盖“两个进程同时启动”的竞争；具体请求仍通过窗口
+    // 消息转交，避免两个进程同时下载/安装更新包。
+    instance_mutex_ = CreateMutexW(nullptr, FALSE, kUpdaterMutexName);
+    const DWORD mutex_error = GetLastError();
+    if (!instance_mutex_) {
+        if (mutex_error == ERROR_ACCESS_DENIED) {
+            // 已有实例权限更高（例如以管理员身份运行），打不开互斥体。
+            WakeExistingInstance(autocheck);
+            return InitResult::AlreadyRunning;
+        }
+        USB_LOG_WARN(L"update", L"创建单实例互斥体失败：%lu", mutex_error);
+    } else if (mutex_error == ERROR_ALREADY_EXISTS) {
+        WakeExistingInstance(autocheck);
+        return InitResult::AlreadyRunning;
+    }
 
     const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     com_initialized_ = SUCCEEDED(com);
     ui::EnableDpiAwareness();
 
     palette_ = ui::MakePalette(ui::IsSystemDarkMode());
-    // 跟随主程序窗口的实时置顶状态，而不是再读一遍配置：主程序可能刚
-    // 切换过设置，且「关于」窗口此刻正以置顶层级挡在前面。
+    // 只用于定位：升级器不再读取主程序的置顶状态，窗口始终置顶。
     const RunningApp running = FindRunningApp();
-    top_most_ = running.window != nullptr &&
-                (GetWindowLongPtrW(running.window, GWL_EXSTYLE) &
-                 WS_EX_TOPMOST) != 0;
 
     const GUID d2d1_factory_iid = {
         0x06152247, 0x6f50, 0x465a,
@@ -154,7 +176,7 @@ bool UpdaterApp::Initialize(HINSTANCE instance, bool autocheck) {
                                  d2d1_factory_iid, nullptr,
                                  reinterpret_cast<void**>(&d2d_))) ||
         !d2d_) {
-        return false;
+        return InitResult::Failed;
     }
 
     const GUID dwrite_factory_iid = {
@@ -164,9 +186,9 @@ bool UpdaterApp::Initialize(HINSTANCE instance, bool autocheck) {
                                    dwrite_factory_iid,
                                    reinterpret_cast<IUnknown**>(&dwrite_))) ||
         !dwrite_) {
-        return false;
+        return InitResult::Failed;
     }
-    if (!ui::CreateFonts(dwrite_, &fonts_)) return false;
+    if (!ui::CreateFonts(dwrite_, &fonts_)) return InitResult::Failed;
 
     static bool pump_registered = false;
     if (!pump_registered) {
@@ -176,12 +198,12 @@ bool UpdaterApp::Initialize(HINSTANCE instance, bool autocheck) {
         pump_class.hInstance = instance;
         pump_class.lpszClassName = kPumpClass;
         pump_registered = RegisterClassExW(&pump_class) != 0;
-        if (!pump_registered) return false;
+        if (!pump_registered) return InitResult::Failed;
     }
 
     pump_ = CreateWindowExW(0, kPumpClass, L"", 0, 0, 0, 0, 0, HWND_MESSAGE,
                             nullptr, instance, this);
-    if (!pump_) return false;
+    if (!pump_) return InitResult::Failed;
     {
         std::lock_guard<std::mutex> lock(post_target_->mutex);
         post_target_->hwnd = pump_;
@@ -189,16 +211,17 @@ bool UpdaterApp::Initialize(HINSTANCE instance, bool autocheck) {
 
     const HWND reference = running.window;
     if (!window_.Open(instance, reference, !autocheck_, d2d_, dwrite_, &fonts_,
-                      palette_, top_most_,
-                      [this]() { StartInstall(); },
+                      palette_, [this]() { StartInstall(); },
                       [this]() { OnWindowClosed(); })) {
-        return false;
+        return InitResult::Failed;
     }
+    window_.SetWakeHandler(
+        [this](bool autocheck) { HandleWakeRequest(autocheck); });
 
     window_.SetStage(ui::UpdaterStage::Checking, L"正在检查更新中……");
     worker_.Start();
     StartCheck();
-    return true;
+    return InitResult::Ok;
 }
 
 int UpdaterApp::Run() {
@@ -213,6 +236,7 @@ int UpdaterApp::Run() {
 void UpdaterApp::OnWindowClosed() { cancel_.store(true); }
 
 void UpdaterApp::StartCheck() {
+    checking_ = true;
     USB_LOG_INFO(L"update", L"开始检查更新：current=%s config=%s arch=%s",
                  kAppVersion, kBuildConfigLabel, kBuildArchLabel);
     const std::shared_ptr<PostTarget> target = post_target_;
@@ -224,8 +248,11 @@ void UpdaterApp::StartCheck() {
         payload->status = static_cast<int>(status);
         if (status == ReleaseFetchStatus::Ok) {
             payload->version = release.version;
+            // dev 版没有可排序的数字版本，无法与正式版本比较大小；只要能
+            // 取到最新 release，就提示有可用版本。正式版本号构建保持原有
+            // 的数值比较逻辑。
             payload->update_available =
-                CompareVersions(kAppVersion, release.version) < 0;
+                kDevBuild || CompareVersions(kAppVersion, release.version) < 0;
             ReleaseAsset asset;
             if (SelectReleaseAsset(release, kBuildConfigLabel,
                                    kBuildArchLabel, &asset)) {
@@ -245,6 +272,7 @@ void UpdaterApp::StartCheck() {
 void UpdaterApp::HandleCheckResult(int status, bool update_available,
                                    bool has_asset, const std::wstring& version,
                                    const ReleaseAsset& asset) {
+    checking_ = false;
     if (status != static_cast<int>(ReleaseFetchStatus::Ok)) {
         if (autocheck_) {
             window_.Close();
@@ -279,6 +307,47 @@ void UpdaterApp::HandleCheckResult(int status, bool update_available,
     window_.SetStage(ui::UpdaterStage::Available,
                      L"发现新版本(v" + version + L")。");
     if (autocheck_) window_.Show();
+}
+
+void UpdaterApp::HandleWakeRequest(bool autocheck) {
+    // 已有实例被显式唤起：先显示并前置。即使本次是 --autocheck 请求，
+    // 既然要唤醒已有窗口，就按可见模式处理，避免检查完又自动关闭。
+    window_.Show();
+    autocheck_ = false;
+    if (installing_) {
+        USB_LOG_INFO(L"update", L"重复启动：正在下载/安装，仅前置窗口");
+        return;
+    }
+    if (checking_) {
+        USB_LOG_INFO(L"update", L"重复启动：正在检查，仅前置窗口");
+        return;
+    }
+    USB_LOG_INFO(L"update", L"重复启动：由现有实例重新检查（autocheck=%d）",
+                 autocheck ? 1 : 0);
+    asset_ = ReleaseAsset{};
+    window_.SetProgress(-1.0f);
+    window_.SetStage(ui::UpdaterStage::Checking, L"正在检查更新中……");
+    StartCheck();
+}
+
+void UpdaterApp::WakeExistingInstance(bool autocheck) {
+    const UINT message = RegisterWindowMessageW(ui::kUpdaterWakeMessageName);
+    if (message == 0) {
+        USB_LOG_WARN(L"update", L"注册升级器唤醒消息失败");
+        return;
+    }
+    const WPARAM wparam =
+        autocheck ? ui::kUpdaterWakeAutocheck : ui::kUpdaterWakeVisible;
+    // 已有实例可能仍在创建窗口，短暂重试后再放弃。
+    for (int attempt = 0; attempt < 40; ++attempt) {
+        const HWND window = FindWindowW(ui::kUpdaterWindowClass, nullptr);
+        if (window && PostMessageW(window, message, wparam, 0)) {
+            USB_LOG_INFO(L"update", L"重复启动请求已转交给现有升级器");
+            return;
+        }
+        Sleep(25);
+    }
+    USB_LOG_WARN(L"update", L"检测到现有升级器，但请求转交失败");
 }
 
 void UpdaterApp::StartInstall() {
@@ -453,6 +522,8 @@ LRESULT UpdaterApp::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
                                      L"正在更新……");
                     break;
                 case InstallStage::Failed:
+                    // 失败后允许重复启动请求重新检查/下载。
+                    installing_ = false;
                     window_.SetStage(ui::UpdaterStage::Failed,
                                      payload->text);
                     break;

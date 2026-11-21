@@ -53,12 +53,13 @@ std::wstring OpenableVolumePath(std::wstring volume_path);
 // 通过 IOCTL_STORAGE_GET_DEVICE_NUMBER 找到物理磁盘对应的设备节点。
 DEVINST FindDiskDevInst(std::uint32_t disk_number);
 bool IsDiskPresent(std::uint32_t disk_number);
+// 介质是否仍然可访问：设备已不存在或报告无介质时为 false。
+bool IsMediaPresent(std::uint32_t disk_number);
 
-bool AnyTargetLetterPresent(const std::vector<EjectTarget>& targets);
-
-// 磁盘节点消失，或所有目标盘符消失，即认为设备已弹出。
-bool WaitDiskGone(std::uint32_t disk_number,
-                  const std::vector<EjectTarget>& targets, int timeout_ms);
+// 整盘移除：只有磁盘设备节点确实消失才算成功，盘符消失不作为依据。
+bool WaitDiskGone(std::uint32_t disk_number, int timeout_ms);
+// 介质弹出：只看介质状态，设备本体（读卡器等）可以继续保留。
+bool WaitMediaGone(std::uint32_t disk_number, int timeout_ms);
 
 std::vector<PartitionEntry> ReadPartitionTable(std::uint32_t disk_number);
 

@@ -44,8 +44,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # 需要完整 tag 历史：CMake 用 git describe 推导版本，
-          # tag 构建得到正式版本号，分支构建自动标记为开发版本。
+          # 版本号不再从 git tag 推导：tag 构建会在 Configure 阶段显式传入
+          # -DUSBASSISTANT_VERSION_OVERRIDE。完整历史仅用于排查。
           fetch-depth: 0
 
       - name: Configure MSVC environment
@@ -53,9 +53,9 @@ jobs:
         with:
           arch: ${{ matrix.msvc_arch }}
 
-      - name: Show version source
+      - name: Show git state
         shell: bash
-        run: git describe --tags --always --dirty --match "v*"
+        run: git describe --tags --always --dirty --match "v*" || true
 
       - name: Configure CMake
         shell: bash
@@ -63,8 +63,13 @@ jobs:
           BUILD_DIR: ${{ matrix.build_dir }}
         run: |
           set -o pipefail
+          # 只有 tag 构建才是正式版本；其他触发方式（分支、手动）一律 dev。
+          VERSION_ARG=""
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION_ARG="-DUSBASSISTANT_VERSION_OVERRIDE=${GITHUB_REF_NAME#v}"
+          fi
           cmake -S . -B "$BUILD_DIR" -A ${{ matrix.cmake_platform }} \
-                -DUSBASSISTANT_BUILD_TESTS=ON | tee configure.log
+                -DUSBASSISTANT_BUILD_TESTS=ON $VERSION_ARG | tee configure.log
           # tag 构建必须确认四种组合推导出的版本都与 tag 一致。
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             grep -F "UsbAssistant version: v${GITHUB_REF_NAME#v}" configure.log
@@ -126,7 +131,12 @@ jobs:
           ARCH: ${{ matrix.arch }}
           LABEL: ${{ matrix.label }}
         run: |
-          $ref = "${{ github.ref_name }}".Replace('/', '-')
+          # 产物命名与构建版本保持一致：tag 构建用 tag，其余一律 dev。
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $ref = "${{ github.ref_name }}".Replace('/', '-')
+          } else {
+            $ref = "dev"
+          }
           $stage = "stage/$ref-$env:LABEL-$env:ARCH"
           Remove-Item -Recurse -Force "stage" -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force $stage | Out-Null

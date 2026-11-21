@@ -21,12 +21,18 @@ namespace usb::app {
 
 class UpdaterApp {
 public:
+    enum class InitResult {
+        Ok,
+        AlreadyRunning,  // 已把本次请求转交给现有实例，静默退出
+        Failed,
+    };
+
     UpdaterApp();
     ~UpdaterApp();
     UpdaterApp(const UpdaterApp&) = delete;
     UpdaterApp& operator=(const UpdaterApp&) = delete;
 
-    bool Initialize(HINSTANCE instance, bool autocheck);
+    InitResult Initialize(HINSTANCE instance, bool autocheck);
     int Run();
 
 private:
@@ -36,6 +42,10 @@ private:
                           LPARAM lparam);
 
     void StartCheck();
+    // 收到重复启动转交：前置窗口，并在空闲时重新发起检查。
+    void HandleWakeRequest(bool autocheck);
+    // 已有实例存在时，把本次请求转交给它的窗口。
+    static void WakeExistingInstance(bool autocheck);
     void HandleCheckResult(int status, bool update_available, bool has_asset,
                            const std::wstring& version,
                            const ReleaseAsset& asset);
@@ -47,6 +57,8 @@ private:
 
     bool autocheck_ = false;
     bool com_initialized_ = false;
+    // 单实例互斥体：句柄存活即代表本进程是唯一升级器实例。
+    HANDLE instance_mutex_ = nullptr;
 
     ID2D1Factory* d2d_ = nullptr;
     IDWriteFactory* dwrite_ = nullptr;
@@ -60,8 +72,8 @@ private:
     std::atomic_bool cancel_{false};
 
     ReleaseAsset asset_;
+    bool checking_ = false;
     bool installing_ = false;
-    bool top_most_ = true;
 };
 
 }  // namespace usb::app

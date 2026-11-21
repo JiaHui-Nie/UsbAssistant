@@ -115,29 +115,49 @@ bool IsDiskPresent(std::uint32_t disk_number) {
     return FindDiskDevInst(disk_number) != 0;
 }
 
-bool AnyTargetLetterPresent(const std::vector<EjectTarget>& targets) {
-    const DWORD drives = GetLogicalDrives();
-    for (const auto& target : targets) {
-        if (target.letter == 0) continue;
-        const int index = towlower(target.letter) - L'a';
-        if (index >= 0 && index < 26 && (drives & (1u << index)) != 0) {
-            return true;
-        }
+bool IsMediaPresent(std::uint32_t disk_number) {
+    wchar_t path[64] = {};
+    swprintf(path, 64, L"\\\\.\\PhysicalDrive%u", disk_number);
+    HANDLE disk = CreateFileW(path, 0,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                  FILE_SHARE_DELETE,
+                              nullptr, OPEN_EXISTING, 0, nullptr);
+    if (disk == INVALID_HANDLE_VALUE) {
+        const DWORD error = GetLastError();
+        // 设备整体消失、无介质或未就绪，都说明介质已不存在；其他错误
+        // （如权限不足）无法确认，按“仍存在”继续等待。
+        return !(error == ERROR_FILE_NOT_FOUND ||
+                 error == ERROR_NO_SUCH_DEVICE ||
+                 error == ERROR_NOT_READY ||
+                 error == ERROR_NO_MEDIA_IN_DRIVE);
     }
-    return false;
+
+    DWORD returned = 0;
+    const BOOL ready = DeviceIoControl(disk, IOCTL_STORAGE_CHECK_VERIFY,
+                                       nullptr, 0, nullptr, 0, &returned,
+                                       nullptr);
+    const DWORD error = ready ? 0 : GetLastError();
+    CloseHandle(disk);
+    if (ready) return true;
+    return !(error == ERROR_NOT_READY || error == ERROR_NO_MEDIA_IN_DRIVE ||
+             error == ERROR_NO_SUCH_DEVICE ||
+             error == ERROR_FILE_NOT_FOUND);
 }
 
-bool WaitDiskGone(std::uint32_t disk_number,
-                  const std::vector<EjectTarget>& targets, int timeout_ms) {
-    bool has_letter = false;
-    for (const auto& target : targets) {
-        if (target.letter != 0) has_letter = true;
-    }
-
+bool WaitDiskGone(std::uint32_t disk_number, int timeout_ms) {
     int waited = 0;
     for (;;) {
         if (!IsDiskPresent(disk_number)) return true;
-        if (has_letter && !AnyTargetLetterPresent(targets)) return true;
+        if (waited >= timeout_ms) return false;
+        Sleep(150);
+        waited += 150;
+    }
+}
+
+bool WaitMediaGone(std::uint32_t disk_number, int timeout_ms) {
+    int waited = 0;
+    for (;;) {
+        if (!IsMediaPresent(disk_number)) return true;
         if (waited >= timeout_ms) return false;
         Sleep(150);
         waited += 150;

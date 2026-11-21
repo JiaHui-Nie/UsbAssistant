@@ -363,16 +363,9 @@ public:
         if (y < work.top + 4) y = work.top + 4;
         if (y + height > work.bottom - 4) y = work.bottom - 4 - height;
 
-        // 弹出层必须跟随设置窗口的置顶层级：设置窗口是 topmost 时，
-        // 非 topmost 的弹出层会被压在它后面，既看不见也收不到点击。
-        const bool owner_topmost =
-            (GetWindowLongPtrW(owner, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
-
-        hwnd_ = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE |
-                (owner_topmost ? WS_EX_TOPMOST : 0),
-            L"UsbAssistantChoicePopup", L"", WS_POPUP, x, y, width, height,
-            nullptr, nullptr, instance, this);
+        hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                                L"UsbAssistantChoicePopup", L"", WS_POPUP, x, y,
+                                width, height, nullptr, nullptr, instance, this);
         if (!hwnd_) return -1;
 
         const int radius = static_cast<int>(std::lround(10.0f * scale_));
@@ -380,8 +373,8 @@ public:
                                                radius, radius),
                      FALSE);
         ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
-        SetWindowPos(hwnd_, owner_topmost ? HWND_TOPMOST : HWND_TOP, 0, 0, 0,
-                     0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        SetWindowPos(hwnd_, HWND_TOP, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         InvalidateRect(hwnd_, nullptr, FALSE);
         UpdateWindow(hwnd_);
 
@@ -646,9 +639,8 @@ bool SettingsWindow::Open(HINSTANCE instance, HWND owner, ID2D1Factory* d2d,
         tracking_leave_ = false;
         hover_row_ = -1;
         close_hover_ = false;
-        SetTopMost(settings_.top_most);
         ShowWindow(hwnd_, SW_SHOW);
-        SetForegroundWindow(hwnd_);
+        RaiseToFront();
         InvalidateRect(hwnd_, nullptr, FALSE);
         return true;
     }
@@ -692,12 +684,11 @@ bool SettingsWindow::Open(HINSTANCE instance, HWND owner, ID2D1Factory* d2d,
     const int top = work_area.top +
                     ((work_area.bottom - work_area.top) - height) / 2;
 
-    // 不设置 owner：设置窗口与主窗口一起置顶，层级由 SetTopMost 统一维护。
+    // 不设置 owner：打开时由 RaiseToFront 临时置顶并激活，随后恢复普通层级。
     hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW, L"UsbAssistantSettings", L"设置",
                             WS_POPUP, left, top, width, height, nullptr, nullptr,
                             instance, this);
     if (!hwnd_) return false;
-    SetTopMost(settings_.top_most);
 
     const int radius = static_cast<int>(std::lround(16.0f * scale_));
     SetWindowRgn(hwnd_, CreateRoundRectRgn(0, 0, width + 1, height + 1, radius,
@@ -707,7 +698,7 @@ bool SettingsWindow::Open(HINSTANCE instance, HWND owner, ID2D1Factory* d2d,
     DwmSetWindowAttribute(hwnd_, 20, &dark, sizeof(dark));  // DWMWA_USE_IMMERSIVE_DARK_MODE
 
     ShowWindow(hwnd_, SW_SHOW);
-    SetForegroundWindow(hwnd_);
+    RaiseToFront();
     InvalidateRect(hwnd_, nullptr, FALSE);
     return true;
 }
@@ -718,9 +709,24 @@ void SettingsWindow::Close() {
 
 bool SettingsWindow::IsOpen() const { return hwnd_ != nullptr; }
 
-void SettingsWindow::SetTopMost(bool enabled) {
+void SettingsWindow::RaiseToFront() {
     if (!hwnd_) return;
-    SetWindowPos(hwnd_, enabled ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
+    // 临时置顶保证 z 序，附加到前台线程后激活，随后恢复普通层级：
+    // 不保留置顶状态，主窗口（即使置顶）可以重新遮挡本窗口。
+    SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    const HWND foreground = GetForegroundWindow();
+    const DWORD foreground_thread =
+        foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
+    const DWORD current_thread = GetCurrentThreadId();
+    const bool attached =
+        foreground_thread != 0 && foreground_thread != current_thread &&
+        AttachThreadInput(foreground_thread, current_thread, TRUE) != FALSE;
+    SetForegroundWindow(hwnd_);
+    if (attached) {
+        AttachThreadInput(foreground_thread, current_thread, FALSE);
+    }
+    SetWindowPos(hwnd_, HWND_NOTOPMOST, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 

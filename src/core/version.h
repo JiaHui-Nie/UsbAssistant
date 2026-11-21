@@ -1,10 +1,10 @@
 // 构建时注入的版本号与项目地址。
-// 版本号由 CMake 从 git tag 自动推导（见 CMakeLists.txt），
-// 源码里不重复维护版本字符串。
+// 默认构建为 dev 版；只有显式指定正式版本号（见 CMakeLists.txt）才会注入
+// 数字版本，源码里不重复维护版本字符串。
 #pragma once
 
 #ifndef USBASSISTANT_VERSION
-#define USBASSISTANT_VERSION L"1.2.1"
+#define USBASSISTANT_VERSION L"dev"
 #endif
 
 #ifndef USBASSISTANT_REPO_URL
@@ -13,14 +13,15 @@
 
 namespace usb {
 
-// 用于比较与请求头的纯数字版本，如 "1.2.3"；开发版也不改变它。
+// 用于版本比较的版本标识：正式版是纯数字（如 "1.2.3"），dev 版为 "dev"。
+// dev 版没有数字顺序，更新判定由 updater 单独处理。
 inline constexpr const wchar_t* kAppVersion = USBASSISTANT_VERSION;
 
 #if defined(USBASSISTANT_DEBUG_BUILD) || defined(USBASSISTANT_DEV_BUILD)
-// 开发版（Debug、分支、脏工作区、无 tag）对外只显示 dev，不带数字或 hash。
+// 开发版（默认构建、Debug、未指定正式版本号）对外只显示 dev。
 inline constexpr const wchar_t* kAboutVersion = L"dev";
 #else
-// 正式版（tag 正好在 HEAD）：只显示纯数字版本号，例如 1.2.1。
+// 正式版：只显示纯数字版本号，例如 1.2.1。
 inline constexpr const wchar_t* kAboutVersion = USBASSISTANT_VERSION;
 #endif
 

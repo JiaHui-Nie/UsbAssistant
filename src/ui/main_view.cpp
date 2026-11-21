@@ -52,6 +52,19 @@ bool Ease(float& value, float target, float rate, float epsilon) {
     return true;
 }
 
+// 在两个颜色之间线性插值（含 alpha）。用于悬停颜色过渡，保证淡入淡出
+// 始终沿同一路径单调变化，不会在某个阈值处换成另一种颜色。
+D2D1_COLOR_F MixColor(const D2D1_COLOR_F& from, const D2D1_COLOR_F& to,
+                      float t) {
+    const float k = std::min(std::max(t, 0.0f), 1.0f);
+    D2D1_COLOR_F color;
+    color.r = from.r + (to.r - from.r) * k;
+    color.g = from.g + (to.g - from.g) * k;
+    color.b = from.b + (to.b - from.b) * k;
+    color.a = from.a + (to.a - from.a) * k;
+    return color;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -85,9 +98,15 @@ void MainView::SetModel(const Model& model) {
         }
     }
     if (previous_devices != model_.devices) {
-        // 设备列表已更换：丢弃指向旧下标的按下/悬停状态。
+        // 设备列表每几秒刷新一次，不能因此丢掉悬停：否则静止不动的指针
+        // 会在下一次扫描后被淡出（且没有新的 WM_MOUSEMOVE 来恢复）。
+        // 先保留状态，布局重建后按最后指针位置重新做命中判定。
         pressed_ = Hit{};
-        hovered_ = Hit{};
+        if (pointer_inside_) {
+            hover_revalidate_ = true;
+        } else {
+            hovered_ = Hit{};
+        }
     }
 }
 
@@ -269,6 +288,20 @@ void MainView::BuildLayout(float panel_height) {
     }
 
     layout_ = std::move(layout);
+
+    if (hover_revalidate_) {
+        hover_revalidate_ = false;
+        if (!pointer_inside_ || !hwnd_ || !IsWindowVisible(hwnd_)) {
+            SetHover(Hit{});
+            pointer_inside_ = false;
+        } else {
+            POINT cursor = pointer_screen_;
+            if (ScreenToClient(hwnd_, &cursor)) {
+                SetHover(HitTest(static_cast<float>(cursor.x) / scale_,
+                                 static_cast<float>(cursor.y) / scale_));
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -468,21 +501,17 @@ void MainView::PaintDeviceCard(ID2D1RenderTarget* target,
         border = WithAlpha(palette_.danger, 0.30f + 0.12f * eject_hover);
         content = palette_.danger;
     } else {
-        const float tint = pressed ? 0.20f : 0.14f * eject_hover;
-        if (tint > 0.001f) button_fill = WithAlpha(palette_.accent, tint);
+        // 悬停填充改为两种不透明色之间的插值：终点仍是“强调色以 14%
+        // 叠在卡片上”的原有观感，起点是基础按钮色。淡出时只会沿这条线
+        // 单调回落，不会先透出白色卡片背景再跳回基础色。
+        const float accent_amount = pressed ? 0.20f : 0.14f;
+        const D2D1_COLOR_F hovered_fill =
+            MixColor(palette_.card, palette_.accent, accent_amount);
+        button_fill = MixColor(palette_.secondary_button, hovered_fill,
+                               pressed ? 1.0f : eject_hover);
         border = WithAlpha(palette_.text_primary, 0.07f + 0.16f * eject_hover);
-        const auto blend = [&](float t) {
-            D2D1_COLOR_F color;
-            color.r = palette_.secondary_text.r +
-                      (palette_.accent.r - palette_.secondary_text.r) * t;
-            color.g = palette_.secondary_text.g +
-                      (palette_.accent.g - palette_.secondary_text.g) * t;
-            color.b = palette_.secondary_text.b +
-                      (palette_.accent.b - palette_.secondary_text.b) * t;
-            color.a = 1.0f;
-            return color;
-        };
-        content = blend(pressed ? 1.0f : eject_hover);
+        content = MixColor(palette_.secondary_text, palette_.accent,
+                           pressed ? 1.0f : eject_hover);
     }
 
     FillRound(target, brush, button, 8.0f, button_fill);
@@ -620,9 +649,8 @@ void MainView::PaintDeviceCard(ID2D1RenderTarget* target,
                               WithAlpha(palette_.accent, tint));
                 }
                 const D2D1_COLOR_F unmount_color =
-                    (volume_hover > 0.5f || unmount_pressed)
-                        ? palette_.accent
-                        : palette_.secondary_text;
+                    MixColor(palette_.secondary_text, palette_.accent,
+                             unmount_pressed ? 1.0f : volume_hover);
                 DrawText(target, brush, L"取消挂载", fonts_->button,
                          row.unmount_button, unmount_color);
             }
@@ -1049,10 +1077,6 @@ Hit MainView::HitTest(float x, float y) const {
                         return {HitKind::Open, static_cast<int>(i),
                                 static_cast<int>(j)};
                     }
-                    if (Contains(row.row, x, y)) {
-                        return {HitKind::Open, static_cast<int>(i),
-                                static_cast<int>(j)};
-                    }
                 } else if (IsMountable(part) &&
                            Contains(row.mount_button, x, y)) {
                     return {HitKind::Mount, static_cast<int>(i),
@@ -1120,6 +1144,12 @@ ViewAction MainView::OnMouseDown(float x, float y) {
 
 ViewAction MainView::OnMouseMove(float x, float y) {
     ViewAction action;
+    if (hwnd_) {
+        POINT cursor = {static_cast<LONG>(std::lround(x * scale_)),
+                        static_cast<LONG>(std::lround(y * scale_))};
+        if (ClientToScreen(hwnd_, &cursor)) pointer_screen_ = cursor;
+    }
+    pointer_inside_ = true;
     if (scroll_dragging_) {
         const float track_height =
             layout_.content_clip.bottom - layout_.content_clip.top;
@@ -1219,6 +1249,7 @@ ViewAction MainView::OnMouseUp(float x, float y) {
 }
 
 void MainView::OnMouseLeave() {
+    pointer_inside_ = false;
     scroll_hover_ = false;
     SetHover(Hit{});
 }
@@ -1324,10 +1355,13 @@ bool MainView::Tick() {
         }
     }
 
+    // 本帧已把新登记的悬停目标推进了一次，后续靠动画值本身判断即可。
+    hover_anim_pending_ = false;
     return more;
 }
 
 bool MainView::Animating() const {
+    if (hover_anim_pending_) return true;
     if (std::fabs(hover_close_ - hover_close_target_) > 0.008f) return true;
     if (std::fabs(scroll_y_ - scroll_target_) > 0.35f) return true;
     if (std::fabs(busy_scroll_ - busy_scroll_target_) > 0.35f) return true;
@@ -1406,6 +1440,12 @@ void MainView::SetHover(const Hit& hit) {
             if (!path.empty()) hover_volume_[path] = 0.0f;
         }
     }
+    // 悬停值刚被置为 0，真正的缓动在 Tick 中；先置位，保证外层据此
+    // 启动动画计时器，否则首帧不会推进，按钮也就不会变色。
+    hover_anim_pending_ =
+        hit.kind == HitKind::Close || hit.kind == HitKind::Eject ||
+        hit.kind == HitKind::Open || hit.kind == HitKind::Mount ||
+        hit.kind == HitKind::Unmount;
 }
 
 float MainView::HoverEject(std::uint32_t disk_number) const {

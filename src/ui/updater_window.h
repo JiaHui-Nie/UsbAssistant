@@ -7,11 +7,22 @@
 
 #include <functional>
 #include <string>
+#include <utility>
 
 #include "ui/text.h"
 #include "ui/theme.h"
 
 namespace usb::ui {
+
+// 升级器窗口类名与单实例转交消息：重复启动的进程通过
+// FindWindow + RegisterWindowMessage 把请求交给已有实例。
+inline constexpr const wchar_t* kUpdaterWindowClass =
+    L"UsbAssistantUpdaterWindow";
+inline constexpr const wchar_t* kUpdaterWakeMessageName =
+    L"UsbAssistant.Updater.Wake";
+// wParam：1 = 普通启动请求，2 = --autocheck 请求。
+inline constexpr WPARAM kUpdaterWakeVisible = 1;
+inline constexpr WPARAM kUpdaterWakeAutocheck = 2;
 
 enum class UpdaterStage {
     Checking,     // 正在检查更新中……
@@ -27,6 +38,8 @@ class UpdaterWindow {
 public:
     using ActionHandler = std::function<void()>;
     using CloseHandler = std::function<void()>;
+    // 参数为 true 表示本次唤起来自 --autocheck。
+    using WakeHandler = std::function<void(bool autocheck)>;
 
     UpdaterWindow() = default;
     ~UpdaterWindow();
@@ -35,10 +48,12 @@ public:
 
     bool Open(HINSTANCE instance, HWND reference, bool visible,
               ID2D1Factory* d2d, IDWriteFactory* dwrite, const Fonts* fonts,
-              const Palette& palette, bool top_most, ActionHandler on_update,
+              const Palette& palette, ActionHandler on_update,
               CloseHandler on_close);
     void Close();
     void Show();
+    // 另一个升级器进程启动时通过注册消息转交请求，由这里回调给控制器。
+    void SetWakeHandler(WakeHandler handler) { on_wake_ = std::move(handler); }
     bool IsOpen() const { return hwnd_ != nullptr; }
     HWND hwnd() const { return hwnd_; }
 
@@ -87,6 +102,7 @@ private:
     Palette palette_ = MakePalette(false);
     ActionHandler on_update_;
     CloseHandler on_close_;
+    WakeHandler on_wake_;
 
     UpdaterStage stage_ = UpdaterStage::Checking;
     std::wstring text_;
@@ -95,7 +111,6 @@ private:
     bool animating_ = false;
 
     float scale_ = 1.0f;
-    bool top_most_ = false;
     Hover hover_ = Hover::None;
     bool tracking_leave_ = false;
     bool dragging_ = false;
