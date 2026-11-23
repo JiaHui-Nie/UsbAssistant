@@ -1,15 +1,19 @@
 cmake_minimum_required(VERSION 3.21)
 
 # ---------------------------------------------------------------------------
-# 版本号：默认构建 dev 版。
-# 只有显式传入 -DUSBASSISTANT_VERSION_OVERRIDE=x.y.z 才构建对应的正式版本；
-# 不再从 git tag 自动推导，避免“本地恰好位于 tag 上就悄悄变成正式版”。
+# 版本号：展示只由「是否有版本来源」决定，与构建类型无关。
+#   有来源（-DUSBASSISTANT_VERSION_OVERRIDE，或 tag 正好指向 HEAD）→ 显示数字版本；
+#   无来源（无 override、无 tag、分支、不干净工作区）→ 显示 dev。
+# kAppVersion 始终是数字，用于版本比较，与展示标识分开。
 # ---------------------------------------------------------------------------
 set(USBASSISTANT_VERSION_OVERRIDE "" CACHE STRING
-    "手动指定正式版本号（如 1.2.3）；留空则构建 dev 版")
+    "手动指定正式版本号（如 1.2.3）；留空则按 git tag 推导")
 
-set(USBASSISTANT_VERSION "dev")
+# 无版本来源时 kAppVersion 使用的数字基线，随每次发布更新。
+set(USBASSISTANT_FALLBACK_VERSION "1.3.0")
+set(USBASSISTANT_VERSION "${USBASSISTANT_FALLBACK_VERSION}")
 set(USBASSISTANT_VERSION_DISPLAY "dev")
+set(USBASSISTANT_DISPLAY_VERSION "dev")
 set(USBASSISTANT_VERSION_IS_RELEASE OFF)
 
 if(USBASSISTANT_VERSION_OVERRIDE)
@@ -25,7 +29,34 @@ if(USBASSISTANT_VERSION_OVERRIDE)
     endif()
     set(USBASSISTANT_VERSION "${USBASSISTANT_VERSION_OVERRIDE_VALUE}")
     set(USBASSISTANT_VERSION_DISPLAY "v${USBASSISTANT_VERSION_OVERRIDE_VALUE}")
+    set(USBASSISTANT_DISPLAY_VERSION "${USBASSISTANT_VERSION_OVERRIDE_VALUE}")
     set(USBASSISTANT_VERSION_IS_RELEASE ON)
+else()
+    find_program(USBASSISTANT_GIT git)
+    if(USBASSISTANT_GIT)
+        execute_process(
+            COMMAND "${USBASSISTANT_GIT}" describe --tags --always --dirty
+                    --match "v*"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE USBASSISTANT_GIT_DESCRIBE
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+    endif()
+
+    if(USBASSISTANT_GIT_DESCRIBE MATCHES "^v([0-9]+(\\.[0-9]+)+)$")
+        # tag 正好指向 HEAD：正式版本，展示数字版本号。
+        set(USBASSISTANT_VERSION "${CMAKE_MATCH_1}")
+        set(USBASSISTANT_VERSION_DISPLAY "v${CMAKE_MATCH_1}")
+        set(USBASSISTANT_DISPLAY_VERSION "${CMAKE_MATCH_1}")
+        set(USBASSISTANT_VERSION_IS_RELEASE ON)
+    elseif(USBASSISTANT_GIT_DESCRIBE MATCHES
+           "^v([0-9]+(\\.[0-9]+)+)-([0-9]+)-g([0-9a-f]+)(-dirty)?$")
+        # tag 之后还有提交：kAppVersion 取基线数字，展示仍为 dev。
+        set(USBASSISTANT_VERSION "${CMAKE_MATCH_1}")
+    elseif(USBASSISTANT_GIT_DESCRIBE MATCHES
+           "^v([0-9]+(\\.[0-9]+)+)-dirty$")
+        set(USBASSISTANT_VERSION "${CMAKE_MATCH_1}")
+    endif()
 endif()
 
 message(STATUS "UsbAssistant version: ${USBASSISTANT_VERSION_DISPLAY}")
@@ -33,7 +64,7 @@ message(STATUS "UsbAssistant version: ${USBASSISTANT_VERSION_DISPLAY}")
 if(USBASSISTANT_VERSION_IS_RELEASE)
     project(UsbAssistant VERSION ${USBASSISTANT_VERSION} LANGUAGES CXX)
 else()
-    # dev 版没有数字版本号，project(VERSION) 不接受非数字值。
+    # 非正式版本同样有数字 kAppVersion，但 project(VERSION) 只在正式版使用。
     project(UsbAssistant LANGUAGES CXX)
 endif()
 enable_testing()
@@ -80,17 +111,10 @@ add_library(usbassistant_core STATIC
 target_include_directories(usbassistant_core PUBLIC src)
 target_compile_definitions(usbassistant_core PUBLIC ${USBASSISTANT_DEFS}
     "USBASSISTANT_VERSION=L\"${USBASSISTANT_VERSION}\""
+    "USBASSISTANT_DISPLAY_VERSION=L\"${USBASSISTANT_DISPLAY_VERSION}\""
     "USBASSISTANT_REPO_URL=L\"https://github.com/JiaHui-Nie/UsbAssistant\""
     $<$<CONFIG:Debug>:USBASSISTANT_DEBUG_BUILD=1>
 )
-if(USBASSISTANT_VERSION_IS_RELEASE)
-    target_compile_definitions(usbassistant_core PUBLIC
-        $<$<CONFIG:Debug>:USBASSISTANT_DEV_BUILD=1>)
-else()
-    # 未指定正式版本号的构建统一按开发版处理。
-    target_compile_definitions(usbassistant_core PUBLIC
-        USBASSISTANT_DEV_BUILD=1)
-endif()
 target_link_libraries(usbassistant_core PUBLIC
     setupapi cfgmgr32 shell32 ole32 oleaut32 user32 advapi32 version uuid
     winhttp

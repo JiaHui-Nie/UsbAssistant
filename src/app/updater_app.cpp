@@ -30,6 +30,7 @@ struct CheckPayload {
     bool update_available = false;
     bool has_asset = false;
     std::wstring version;
+    std::wstring error;
     ReleaseAsset asset;
 };
 
@@ -246,13 +247,12 @@ void UpdaterApp::StartCheck() {
         std::wstring error;
         const ReleaseFetchStatus status = FetchLatestRelease(&release, &error);
         payload->status = static_cast<int>(status);
+        payload->error = error;
         if (status == ReleaseFetchStatus::Ok) {
             payload->version = release.version;
-            // dev 版没有可排序的数字版本，无法与正式版本比较大小；只要能
-            // 取到最新 release，就提示有可用版本。正式版本号构建保持原有
-            // 的数值比较逻辑。
+            // 所有构建统一按数字版本比较：Debug 与 Release 不再分流。
             payload->update_available =
-                kDevBuild || CompareVersions(kAppVersion, release.version) < 0;
+                CompareVersions(kAppVersion, release.version) < 0;
             ReleaseAsset asset;
             if (SelectReleaseAsset(release, kBuildConfigLabel,
                                    kBuildArchLabel, &asset)) {
@@ -271,6 +271,7 @@ void UpdaterApp::StartCheck() {
 
 void UpdaterApp::HandleCheckResult(int status, bool update_available,
                                    bool has_asset, const std::wstring& version,
+                                   const std::wstring& error,
                                    const ReleaseAsset& asset) {
     checking_ = false;
     if (status != static_cast<int>(ReleaseFetchStatus::Ok)) {
@@ -278,7 +279,9 @@ void UpdaterApp::HandleCheckResult(int status, bool update_available,
             window_.Close();
             return;
         }
-        window_.SetStage(ui::UpdaterStage::CheckFailed, L"检查更新失败。");
+        window_.SetStage(ui::UpdaterStage::CheckFailed,
+                         error.empty() ? L"检查更新失败。"
+                                       : L"检查更新失败：" + error);
         return;
     }
 
@@ -297,7 +300,10 @@ void UpdaterApp::HandleCheckResult(int status, bool update_available,
             window_.Close();
             return;
         }
-        window_.SetStage(ui::UpdaterStage::CheckFailed, L"检查更新失败。");
+        window_.SetStage(
+            ui::UpdaterStage::CheckFailed,
+            std::wstring(L"未找到匹配当前构建(") + kBuildConfigLabel + L"-" +
+                kBuildArchLabel + L")的发布包。");
         return;
     }
 
@@ -498,7 +504,7 @@ LRESULT UpdaterApp::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             if (!payload) return 0;
             HandleCheckResult(payload->status, payload->update_available,
                               payload->has_asset, payload->version,
-                              payload->asset);
+                              payload->error, payload->asset);
             return 0;
         }
         case kMessageDownloadProgress: {

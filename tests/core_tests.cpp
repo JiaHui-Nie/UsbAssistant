@@ -338,15 +338,18 @@ void TestVersionAndUpdate() {
     CHECK(!ParseLatestRelease(R"({"tag_name":"v1.2.1"})", &tag, &url, &error));
 
     CHECK(!std::wstring(kAppVersion).empty());
-#if defined(USBASSISTANT_DEBUG_BUILD) || defined(USBASSISTANT_DEV_BUILD)
-    // 开发版：关于界面统一只显示 dev。
-    CHECK_EQ(std::wstring(kAboutVersion), L"dev");
-#else
-    // 正式版：关于界面只显示纯数字版本号。
+    // kAppVersion 始终是数字版本号，供版本比较使用。
+    const std::wstring app_version = kAppVersion;
+    CHECK(!app_version.empty());
+    CHECK(app_version.front() >= L'0' && app_version.front() <= L'9');
+    // 展示标识只由是否有版本来源决定：数字版本号或 dev，与构建类型无关。
     const std::wstring about_version = kAboutVersion;
-    CHECK(about_version.find(L'v') == std::wstring::npos);
-    CHECK(about_version.find(L'-') == std::wstring::npos);
-#endif
+    CHECK(!about_version.empty());
+    if (about_version != L"dev") {
+        CHECK(about_version.front() >= L'0' && about_version.front() <= L'9');
+        CHECK(about_version.find(L'v') == std::wstring::npos);
+        CHECK(about_version.find(L'-') == std::wstring::npos);
+    }
 }
 
 void TestReleaseAssets() {

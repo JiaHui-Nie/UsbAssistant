@@ -48,6 +48,7 @@ private:
     static void WakeExistingInstance(bool autocheck);
     void HandleCheckResult(int status, bool update_available, bool has_asset,
                            const std::wstring& version,
+                           const std::wstring& error,
                            const ReleaseAsset& asset);
     void StartInstall();
     void RunInstall(ReleaseAsset asset);
