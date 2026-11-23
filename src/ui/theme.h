@@ -12,6 +12,10 @@ D2D1_COLOR_F Rgb(std::uint32_t rgb, float alpha = 1.0f);
 COLORREF ToColorRef(const D2D1_COLOR_F& color);
 bool IsSystemDarkMode();
 
+// 系统强调色（设置 -> 个性化 -> 颜色 里的“Windows 颜色”）。
+// 取到返回 true 并写入 0xRRGGBB；系统不支持或读取失败时返回 false。
+bool SystemAccentColor(std::uint32_t* rgb);
+
 struct Palette {
     bool dark = false;
 

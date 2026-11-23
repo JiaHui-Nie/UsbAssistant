@@ -560,13 +560,10 @@ LRESULT UpdaterWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             return 0;
         case WM_SETTINGCHANGE:
         case WM_THEMECHANGED: {
-            // 与主程序一致：跟随系统明暗主题切换。
-            const Palette palette = MakePalette(IsSystemDarkMode());
-            if (palette.dark != palette_.dark) {
-                palette_ = palette;
-                const BOOL dark = palette_.dark ? TRUE : FALSE;
-                DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(dark));
-            }
+            // 与主程序一致：跟随系统明暗主题与强调色切换。
+            palette_ = MakePalette(IsSystemDarkMode());
+            const BOOL dark = palette_.dark ? TRUE : FALSE;
+            DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(dark));
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }

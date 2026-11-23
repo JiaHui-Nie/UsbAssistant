@@ -582,7 +582,7 @@ void Application::TickAnimation() {
 
 void Application::UpdateTheme() {
     const bool dark = ui::IsSystemDarkMode();
-    if (dark == palette_.dark) return;
+    // 系统主题或强调色都可能变化：始终重建并下发，避免强调色改动被忽略。
     palette_ = ui::MakePalette(dark);
     view_.SetPalette(palette_);
     settings_window_.SetPalette(palette_);
