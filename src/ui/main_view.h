@@ -126,16 +126,16 @@ public:
     };
 
     MainView() = default;
-    ~MainView();
     MainView(const MainView&) = delete;
     MainView& operator=(const MainView&) = delete;
 
-    static constexpr float kShadowPad = 15.0f;
     static constexpr float kPanelWidth = 372.0f;
     static constexpr float kPanelRadius = 16.0f;
 
     void Attach(HWND hwnd) { hwnd_ = hwnd; }
     void SetPalette(const Palette& palette) { palette_ = palette; }
+    // 开启「贴边收起」时，拖动被限制在工作区内，碰到边缘立即停住。
+    void SetEdgeClamping(bool enabled) { edge_clamping_ = enabled; }
     void SetFonts(const Fonts* fonts) { fonts_ = fonts; }
     void SetDWrite(IDWriteFactory* factory) { dwrite_ = factory; }
     void SetModel(const Model& model);
@@ -170,20 +170,7 @@ public:
     float scale() const { return scale_; }
 
 private:
-    // 面板阴影是每帧最贵的固定内容（18 层圆角矩形），按窗口尺寸缓存复用。
-    struct ShadowCache {
-        ID2D1Bitmap* bitmap = nullptr;
-        ID2D1RenderTarget* owner = nullptr;
-        int width = 0;
-        int height = 0;
-        float dpi = 0.0f;
-        bool dark = false;
-        void Release();
-    };
-
     void BuildLayout(float panel_height);
-    void DrawShadow(ID2D1RenderTarget* target,
-                    ID2D1SolidColorBrush* brush, float dpi) const;
     void PaintHeader(ID2D1RenderTarget* target, ID2D1SolidColorBrush* brush) const;
     void PaintDeviceCard(ID2D1RenderTarget* target,
                          ID2D1SolidColorBrush* brush,
@@ -218,7 +205,6 @@ private:
     IDWriteFactory* dwrite_ = nullptr;
     Model model_;
     ViewLayout layout_;
-    mutable ShadowCache shadow_;
 
     float scale_ = 1.0f;
     float scroll_y_ = 0.0f;
@@ -244,6 +230,7 @@ private:
     float scroll_grow_ = 0.0f;
 
     bool dragging_window_ = false;
+    bool edge_clamping_ = false;
     POINT drag_cursor_start_ = {};
     RECT drag_window_start_ = {};
 

@@ -23,9 +23,6 @@ void StrokeRound(ID2D1RenderTarget* target, ID2D1SolidColorBrush* brush,
                  const D2D1_RECT_F& rect, float radius,
                  const D2D1_COLOR_F& color, float width);
 
-void DrawPanelShadow(ID2D1RenderTarget* target, ID2D1SolidColorBrush* brush,
-                     const D2D1_RECT_F& panel, float radius, bool dark);
-
 void DrawUsbGlyph(ID2D1RenderTarget* target, ID2D1SolidColorBrush* brush,
                   float center_x, float center_y, float unit,
                   const D2D1_COLOR_F& color, float led_alpha);

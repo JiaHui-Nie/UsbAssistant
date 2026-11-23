@@ -29,6 +29,17 @@ constexpr float kEjectWidth = 88.0f;
 constexpr float kCloseSize = 26.0f;
 constexpr float kDialogRowHeight = 34.0f;
 
+RECT WorkAreaForWindow(HWND hwnd) {
+    MONITORINFO info = {};
+    info.cbSize = sizeof(info);
+    const HMONITOR monitor =
+        MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    if (monitor && GetMonitorInfoW(monitor, &info)) return info.rcWork;
+    RECT fallback = {};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &fallback, 0);
+    return fallback;
+}
+
 float CardHeight(const Device& device) {
     return kCardHeaderHeight +
            kPartitionHeight * static_cast<float>(device.partitions.size()) +
@@ -70,19 +81,6 @@ D2D1_COLOR_F MixColor(const D2D1_COLOR_F& from, const D2D1_COLOR_F& to,
 // ---------------------------------------------------------------------------
 // 模型与布局
 // ---------------------------------------------------------------------------
-
-MainView::~MainView() { shadow_.Release(); }
-
-void MainView::ShadowCache::Release() {
-    if (bitmap) {
-        bitmap->Release();
-        bitmap = nullptr;
-    }
-    owner = nullptr;
-    width = 0;
-    height = 0;
-    dpi = 0.0f;
-}
 
 void MainView::SetModel(const Model& model) {
     const bool dialog_changed = model_.dialog != model.dialog;
@@ -131,10 +129,9 @@ void MainView::Layout(float panel_height, float scale) {
 
 void MainView::BuildLayout(float panel_height) {
     ViewLayout layout;
-    layout.window_w = kPanelWidth + kShadowPad * 2.0f;
-    layout.window_h = panel_height + kShadowPad * 2.0f;
-    layout.panel = Rect(kShadowPad, kShadowPad, kShadowPad + kPanelWidth,
-                        kShadowPad + panel_height);
+    layout.window_w = kPanelWidth;
+    layout.window_h = panel_height;
+    layout.panel = Rect(0.0f, 0.0f, kPanelWidth, panel_height);
 
     const float center_y = layout.panel.top + kHeaderHeight * 0.5f;
     layout.close_button = Rect(layout.panel.right - 14.0f - kCloseSize,
@@ -311,6 +308,7 @@ void MainView::BuildLayout(float panel_height) {
 void MainView::Paint(Canvas& canvas, float dpi, float window_alpha) const {
     ID2D1RenderTarget* target = canvas.target();
     if (!target || !fonts_) return;
+    (void)dpi;
     (void)window_alpha;
 
     ID2D1SolidColorBrush* brush = nullptr;
@@ -320,9 +318,13 @@ void MainView::Paint(Canvas& canvas, float dpi, float window_alpha) const {
         return;
     }
 
-    DrawShadow(target, brush, dpi);
     FillRound(target, brush, layout_.panel, kPanelRadius, palette_.panel);
-    StrokeRound(target, brush, layout_.panel, kPanelRadius,
+    // 面板现在与窗口同尺寸，描边若仍按面板矩形绘制，外侧半个像素会被窗口
+    // 裁掉。内缩 0.5dip 并相应减小圆角，保证边框完整可见。
+    const D2D1_RECT_F border =
+        Rect(layout_.panel.left + 0.5f, layout_.panel.top + 0.5f,
+             layout_.panel.right - 0.5f, layout_.panel.bottom - 0.5f);
+    StrokeRound(target, brush, border, kPanelRadius - 0.5f,
                 palette_.panel_border, 1.0f);
 
     PaintHeader(target, brush);
@@ -352,53 +354,6 @@ void MainView::Paint(Canvas& canvas, float dpi, float window_alpha) const {
 
     PaintToast(target, brush);
     brush->Release();
-}
-
-void MainView::DrawShadow(ID2D1RenderTarget* target,
-                          ID2D1SolidColorBrush* brush, float dpi) const {
-    const int width = static_cast<int>(std::lround(layout_.window_w));
-    const int height = static_cast<int>(std::lround(layout_.window_h));
-    const D2D1_RECT_F window =
-        Rect(0.0f, 0.0f, layout_.window_w, layout_.window_h);
-
-    if (shadow_.bitmap && shadow_.owner == target && shadow_.width == width &&
-        shadow_.height == height && shadow_.dpi == dpi &&
-        shadow_.dark == palette_.dark) {
-        target->DrawBitmap(shadow_.bitmap, window);
-        return;
-    }
-
-    shadow_.Release();
-    ID2D1BitmapRenderTarget* cache_target = nullptr;
-    if (SUCCEEDED(target->CreateCompatibleRenderTarget(&cache_target)) &&
-        cache_target) {
-        ID2D1SolidColorBrush* cache_brush = nullptr;
-        cache_target->CreateSolidColorBrush(D2D1_COLOR_F{1.0f, 1.0f, 1.0f, 1.0f},
-                                            &cache_brush);
-        if (cache_brush) {
-            cache_target->BeginDraw();
-            cache_target->Clear(D2D1_COLOR_F{0.0f, 0.0f, 0.0f, 0.0f});
-            DrawPanelShadow(cache_target, cache_brush, layout_.panel,
-                            kPanelRadius, palette_.dark);
-            if (SUCCEEDED(cache_target->EndDraw()) &&
-                SUCCEEDED(cache_target->GetBitmap(&shadow_.bitmap))) {
-                shadow_.owner = target;
-                shadow_.width = width;
-                shadow_.height = height;
-                shadow_.dpi = dpi;
-                shadow_.dark = palette_.dark;
-            }
-            cache_brush->Release();
-        }
-        cache_target->Release();
-    }
-
-    if (shadow_.bitmap) {
-        target->DrawBitmap(shadow_.bitmap, window);
-    } else {
-        DrawPanelShadow(target, brush, layout_.panel, kPanelRadius,
-                        palette_.dark);
-    }
 }
 
 void MainView::PaintHeader(ID2D1RenderTarget* target,
@@ -1165,10 +1120,19 @@ ViewAction MainView::OnMouseMove(float x, float y) {
     if (dragging_window_) {
         POINT cursor = {};
         GetCursorPos(&cursor);
-        const int new_x =
+        int new_x =
             drag_window_start_.left + (cursor.x - drag_cursor_start_.x);
-        const int new_y =
+        int new_y =
             drag_window_start_.top + (cursor.y - drag_cursor_start_.y);
+        if (edge_clamping_) {
+            const int width = drag_window_start_.right - drag_window_start_.left;
+            const int height = drag_window_start_.bottom - drag_window_start_.top;
+            const RECT work = WorkAreaForWindow(hwnd_);
+            new_x = std::clamp(new_x, static_cast<int>(work.left),
+                               static_cast<int>(work.right) - width);
+            new_y = std::clamp(new_y, static_cast<int>(work.top),
+                               static_cast<int>(work.bottom) - height);
+        }
         SetWindowPos(hwnd_, nullptr, new_x, new_y, 0, 0,
                      SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
         return action;

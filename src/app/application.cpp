@@ -322,6 +322,7 @@ bool Application::Initialize(HINSTANCE instance, bool start_hidden) {
     view_.SetPalette(palette_);
     view_.SetFonts(&fonts_);
     view_.SetDWrite(dwrite_);
+    view_.SetEdgeClamping(settings_.edge_collapse);
 
     icon_small_ = static_cast<HICON>(
         LoadImageW(instance_, MAKEINTRESOURCEW(1), IMAGE_ICON, 16, 16, 0));
@@ -476,8 +477,8 @@ float Application::MaxPanelHeight() const {
         (work_area.bottom - work_area.top) / (scale_ > 0 ? scale_ : 1.0f);
     if (screen <= 0.0f) return 600.0f;
     const float percent = static_cast<float>(settings_.main_height_percent) / 100.0f;
-    const float limit = screen * percent - view_.kShadowPad * 2.0f;
-    const float available = screen - view_.kShadowPad * 2.0f - 40.0f;
+    const float limit = screen * percent;
+    const float available = screen - 40.0f;
     return std::max(120.0f, std::min(available, limit));
 }
 
@@ -655,6 +656,7 @@ void Application::ApplySettings(const Settings& settings) {
 
     settings_ = settings;
     settings_.Normalize();
+    view_.SetEdgeClamping(settings_.edge_collapse);
     USB_LOG_INFO(
         L"app",
         L"设置变更：filter=%d height=%d position=%d top_most=%d "
@@ -1723,9 +1725,9 @@ void Application::CheckDropPosition() {
 
     RECT window = {};
     GetWindowRect(hwnd_, &window);
-    const int pad = static_cast<int>(std::lround(view_.kShadowPad * scale_));
-    RECT panel = {window.left + pad, window.top + pad, window.right - pad,
-                  window.bottom - pad};
+    // 移除阴影后窗口就是面板可视区域，直接用窗口矩形作为贴边判定基准，
+    // 触发距离按面板边缘计算，和视觉上的贴边保持一致。
+    const RECT& panel = window;
 
     RECT work = WorkAreaForWindow(hwnd_);
     const RECT monitor = MonitorAreaForWindow(hwnd_);
@@ -1735,7 +1737,7 @@ void Application::CheckDropPosition() {
     const bool allow_right = work.right >= monitor.right;
     const bool allow_bottom = work.bottom >= monitor.bottom;
 
-    const int margin = static_cast<int>(std::lround(24.0f * scale_));
+    const int margin = static_cast<int>(std::lround(8.0f * scale_));
     constexpr int kFar = 100000;
     const int left_score =
         allow_left ? panel.left - (work.left + margin) : kFar;
@@ -1766,11 +1768,8 @@ void Application::CollapseToEdgeBar(int edge) {
     if (!hwnd_ || edge_collapsed_ || in_tray_) return;
     if (!settings_.edge_collapse) return;
 
-    RECT window = {};
-    GetWindowRect(hwnd_, &window);
-    const int pad = static_cast<int>(std::lround(view_.kShadowPad * scale_));
-    RECT panel = {window.left + pad, window.top + pad, window.right - pad,
-                  window.bottom - pad};
+    RECT panel = {};
+    GetWindowRect(hwnd_, &panel);
     RECT work = WorkAreaForWindow(hwnd_);
 
     int side = static_cast<int>(std::lround(42.0f * scale_));

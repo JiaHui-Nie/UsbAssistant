@@ -58,23 +58,6 @@ void StrokeRound(ID2D1RenderTarget* target, ID2D1SolidColorBrush* brush,
     target->DrawRoundedRectangle(Round(rect, radius), brush, width);
 }
 
-void DrawPanelShadow(ID2D1RenderTarget* target, ID2D1SolidColorBrush* brush,
-                     const D2D1_RECT_F& panel, float radius, bool dark) {
-    if (!target || !brush) return;
-    constexpr int kLayers = 18;
-    constexpr float kMaxGrow = 15.0f;
-    const float base_alpha = dark ? 0.038f : 0.020f;
-    for (int i = kLayers - 1; i >= 0; --i) {
-        const float t = static_cast<float>(i) / static_cast<float>(kLayers - 1);
-        const float grow = kMaxGrow * t;
-        brush->SetColor(D2D1_COLOR_F{0.0f, 0.0f, 0.0f, base_alpha});
-        const D2D1_RECT_F rect =
-            Rect(panel.left - grow, panel.top - grow + 2.0f,
-                 panel.right + grow, panel.bottom + grow + 2.0f);
-        target->FillRoundedRectangle(Round(rect, radius + grow), brush);
-    }
-}
-
 void DrawUsbGlyph(ID2D1RenderTarget* target, ID2D1SolidColorBrush* brush,
                   float center_x, float center_y, float unit,
                   const D2D1_COLOR_F& color, float led_alpha) {
