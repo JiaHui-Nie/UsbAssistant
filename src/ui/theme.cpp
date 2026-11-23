@@ -8,7 +8,7 @@ namespace {
 constexpr std::uint32_t kFallbackAccentLight = 0x0A7AFF;
 constexpr std::uint32_t kFallbackAccentDark = 0x0A84FF;
 
-// 读取形如 0xAARRGGBB 的注册表颜色；缺失或类型不符返回 0。
+// 读取形如 0xAABBGGRR 的注册表颜色；缺失或类型不符返回 0。
 std::uint32_t ReadArgbValue(HKEY root, const wchar_t* sub_key,
                             const wchar_t* name) {
     HKEY key = nullptr;
@@ -101,7 +101,8 @@ bool IsSystemDarkMode() {
 
 bool SystemAccentColor(std::uint32_t* rgb) {
     if (!rgb) return false;
-    // DWM 与 Explorer 都把强调色存成 0xAARRGGBB；Alpha 为 0 视为未设置。
+    // DWM 与 Explorer 都把强调色存成 0xAABBGGRR（ABGR，低字节是红）；
+    // Alpha 为 0 视为未设置。
     std::uint32_t value = ReadArgbValue(
         HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\DWM",
         L"AccentColor");
@@ -112,7 +113,10 @@ bool SystemAccentColor(std::uint32_t* rgb) {
             L"AccentColorMenu");
     }
     if (((value >> 24) & 0xFF) == 0) return false;
-    *rgb = value & 0x00FFFFFF;
+    const std::uint32_t red = value & 0xFF;
+    const std::uint32_t green = (value >> 8) & 0xFF;
+    const std::uint32_t blue = (value >> 16) & 0xFF;
+    *rgb = (red << 16) | (green << 8) | blue;
     return true;
 }
 
