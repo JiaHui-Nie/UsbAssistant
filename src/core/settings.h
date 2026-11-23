@@ -24,6 +24,9 @@ struct Settings {
     bool skip_close_confirm = false;
     int empty_hide_seconds = 0;     // 0 = 不自动隐藏
     bool edge_collapse = false;
+    // 全局快捷键：mods 为 MOD_* 位组合，vk 为虚拟键码；vk == 0 表示未设置。
+    int hotkey_mods = 0;
+    int hotkey_vk = 0;
     bool show_hidden_partitions = false;
     bool show_esp_partitions = true;
     bool show_msr_partitions = true;

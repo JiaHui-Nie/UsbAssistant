@@ -39,6 +39,9 @@ constexpr UINT kMessageHelperDone = WM_APP + 5;
 constexpr UINT kMessageShellNotify = WM_APP + 6;
 constexpr UINT kMessageShowMain = WM_APP + 7;
 
+// 全局快捷键占用一个应用私有的热键 ID。
+constexpr int kHotkeyId = 1;
+
 constexpr UINT_PTR kTimerAnim = 1;
 constexpr UINT_PTR kTimerScan = 2;
 constexpr UINT_PTR kTimerPoll = 3;
@@ -433,6 +436,7 @@ bool Application::Initialize(HINSTANCE instance, bool start_hidden) {
     if (HasPendingUpdaterUpdate()) {
         SetTimer(hwnd_, kTimerPendingUpdater, 1500, nullptr);
     }
+    SyncHotkey(true);
     return true;
 }
 
@@ -656,6 +660,7 @@ void Application::ApplySettings(const Settings& settings) {
 
     settings_ = settings;
     settings_.Normalize();
+    SyncHotkey(false);
     view_.SetEdgeClamping(settings_.edge_collapse);
     USB_LOG_INFO(
         L"app",
@@ -706,7 +711,67 @@ void Application::ApplySettings(const Settings& settings) {
 void Application::ShowSettings() {
     settings_window_.Open(
         instance_, hwnd_, d2d_, dwrite_, &fonts_, palette_, settings_,
-        [this](const Settings& settings) { ApplySettings(settings); });
+        [this](const Settings& settings) { ApplySettings(settings); },
+        [this](int mods, int vk) { return ChangeHotkey(mods, vk); });
+}
+
+std::wstring Application::ChangeHotkey(int mods, int vk) {
+    if (!hwnd_) return L"窗口尚未就绪，无法设置快捷键。";
+    if (vk != 0 && (mods & (MOD_CONTROL | MOD_ALT | MOD_WIN)) == 0) {
+        return L"全局快捷键至少需要同时按住 Ctrl、Alt 或 Win 键，\n"
+               L"否则会影响正常输入。";
+    }
+
+    const int previous_mods = hotkey_mods_;
+    const int previous_vk = hotkey_vk_;
+    if (hotkey_registered_) {
+        UnregisterHotKey(hwnd_, kHotkeyId);
+        hotkey_registered_ = false;
+    }
+
+    if (vk == 0) {
+        hotkey_mods_ = 0;
+        hotkey_vk_ = 0;
+        USB_LOG_INFO(L"app", L"全局快捷键已关闭");
+        return std::wstring();
+    }
+
+    if (!RegisterHotKey(hwnd_, kHotkeyId, mods | MOD_NOREPEAT, vk)) {
+        // 注册失败时恢复旧快捷键，避免用户丢掉原本可用的设置。
+        if (previous_vk != 0 &&
+            RegisterHotKey(hwnd_, kHotkeyId, previous_mods | MOD_NOREPEAT,
+                           previous_vk)) {
+            hotkey_mods_ = previous_mods;
+            hotkey_vk_ = previous_vk;
+            hotkey_registered_ = true;
+        } else {
+            hotkey_mods_ = 0;
+            hotkey_vk_ = 0;
+        }
+        USB_LOG_WARN(L"app", L"全局快捷键注册失败：mods=0x%X vk=0x%X", mods,
+                     vk);
+        return L"该快捷键已被系统或其他程序占用，或使用了系统保留按键。\n"
+               L"请换一个组合再试。";
+    }
+    hotkey_mods_ = mods;
+    hotkey_vk_ = vk;
+    hotkey_registered_ = true;
+    USB_LOG_INFO(L"app", L"全局快捷键已注册：mods=0x%X vk=0x%X", mods, vk);
+    return std::wstring();
+}
+
+void Application::SyncHotkey(bool startup) {
+    if (settings_.hotkey_mods == hotkey_mods_ &&
+        settings_.hotkey_vk == hotkey_vk_) {
+        return;
+    }
+    const std::wstring error =
+        ChangeHotkey(settings_.hotkey_mods, settings_.hotkey_vk);
+    if (!error.empty()) {
+        // 启动时配置里的组合可能已被占用；设置界面会自行提示冲突并回滚。
+        USB_LOG_WARN(L"app", L"按配置注册快捷键失败：%s",
+                     startup ? L"启动" : L"设置变更");
+    }
 }
 
 void Application::ShowAbout() {
@@ -2466,6 +2531,19 @@ LRESULT Application::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             PaintNow();
             return 0;
         }
+
+        case WM_HOTKEY:
+            if (wparam == kHotkeyId) {
+                if (edge_collapsed_) {
+                    RestoreFromEdgeBar(true);
+                } else if (IsWindowVisible(hwnd_) && !in_tray_) {
+                    HideToTray();
+                } else {
+                    ShowFromTray(true);
+                }
+                return 0;
+            }
+            break;
 
         case WM_SETTINGCHANGE:
         case WM_THEMECHANGED:

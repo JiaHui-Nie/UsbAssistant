@@ -99,6 +99,14 @@ void Settings::Normalize() {
     close_action = close_action == 1 ? 1 : 0;
     empty_hide_seconds = std::clamp(empty_hide_seconds, 0, 86400);
     main_height_percent = std::clamp(main_height_percent, 20, 100);
+    hotkey_mods &= (MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN);
+    if (hotkey_vk <= 0 || hotkey_vk > 0xFF) hotkey_vk = 0;
+    // 全局快捷键必须带 Ctrl/Alt/Win，避免吞掉正常输入；不合法时视为关闭。
+    if (hotkey_vk == 0 ||
+        (hotkey_mods & (MOD_ALT | MOD_CONTROL | MOD_WIN)) == 0) {
+        hotkey_mods = 0;
+        hotkey_vk = 0;
+    }
 }
 
 SettingsStore::SettingsStore() : path_(ResolveConfigPath()) {}
@@ -122,6 +130,8 @@ Settings SettingsStore::Load() const {
         ReadInt(path_, L"SkipCloseConfirm", 0) != 0;
     settings.empty_hide_seconds = ReadInt(path_, L"EmptyHideSec", 0);
     settings.edge_collapse = ReadInt(path_, L"EdgeCollapse", 0) != 0;
+    settings.hotkey_mods = ReadInt(path_, L"HotkeyMods", 0);
+    settings.hotkey_vk = ReadInt(path_, L"HotkeyVk", 0);
     settings.show_hidden_partitions =
         ReadInt(path_, L"ShowHiddenPartitions", 0) != 0;
     settings.show_esp_partitions =
@@ -181,6 +191,8 @@ bool SettingsStore::Save(const Settings& settings) const {
          ok;
     ok = WriteInt(path_, L"EmptyHideSec", settings.empty_hide_seconds) && ok;
     ok = WriteInt(path_, L"EdgeCollapse", settings.edge_collapse ? 1 : 0) && ok;
+    ok = WriteInt(path_, L"HotkeyMods", settings.hotkey_mods) && ok;
+    ok = WriteInt(path_, L"HotkeyVk", settings.hotkey_vk) && ok;
     ok = WriteInt(path_, L"ShowHiddenPartitions",
                   settings.show_hidden_partitions ? 1 : 0) &&
          ok;

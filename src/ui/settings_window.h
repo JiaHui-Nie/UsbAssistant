@@ -18,6 +18,8 @@ namespace usb::ui {
 class SettingsWindow {
 public:
     using ChangeHandler = std::function<void(const Settings&)>;
+    // 校验并注册全局快捷键；成功返回空字符串，失败返回给用户看的原因。
+    using HotkeyHandler = std::function<std::wstring(int mods, int vk)>;
     using CloseHandler = std::function<void()>;
 
     SettingsWindow() = default;
@@ -28,7 +30,8 @@ public:
     bool Open(HINSTANCE instance, HWND owner, ID2D1Factory* d2d,
               IDWriteFactory* dwrite, const Fonts* fonts,
               const Palette& palette, const Settings& settings,
-              ChangeHandler on_change, CloseHandler on_close = {});
+              ChangeHandler on_change, HotkeyHandler on_hotkey = {},
+              CloseHandler on_close = {});
     void Close();
     bool IsOpen() const;
 
@@ -62,11 +65,16 @@ private:
     static bool IsSubRow(int row);
     D2D1_RECT_F ToggleRect(int row) const;
     D2D1_RECT_F ChoiceRect(int row) const;
+    D2D1_RECT_F ShortcutRect(int row) const;
+    D2D1_RECT_F ShortcutClearRect(int row) const;
     D2D1_RECT_F CloseRect() const;
     int HitRow(float x, float y) const;
 
     void ToggleRow(int row);
     void ChooseRow(int row);
+    void HandleHotkeyCapture(int vk);
+    void ClearHotkey();
+    void ApplyHotkey(int mods, int vk);
     void NotifyChange();
     void SetScroll(float value);
 
@@ -79,6 +87,7 @@ private:
     Palette palette_ = MakePalette(false);
     Settings settings_;
     ChangeHandler on_change_;
+    HotkeyHandler on_hotkey_;
     CloseHandler on_close_;
 
     float scale_ = 1.0f;
@@ -87,6 +96,8 @@ private:
     float scroll_ = 0.0f;
     int hover_row_ = -1;
     bool close_hover_ = false;
+    bool clear_hover_ = false;
+    bool capturing_hotkey_ = false;
     bool menu_open_ = false;
     bool expanded_ = false;
     int open_row_ = -1;

@@ -90,6 +90,7 @@ void TestSettings() {
     CHECK(usb::Settings().show_esp_partitions);
     CHECK(usb::Settings().show_msr_partitions);
     CHECK(usb::Settings().show_other_hidden_partitions);
+    CHECK_EQ(std::to_wstring(usb::Settings().hotkey_vk), L"0");
 
     usb::Settings settings;
     settings.position_mode = 9;
@@ -99,7 +100,18 @@ void TestSettings() {
     settings.close_action = 3;
     settings.refresh_seconds = -4;
     settings.occupants_refresh_seconds = 0;
+    settings.hotkey_mods = MOD_SHIFT;
+    settings.hotkey_vk = 'U';
     settings.Normalize();
+    // 没有 Ctrl/Alt/Win 的全局快捷键不合法，必须关闭。
+    CHECK_EQ(std::to_wstring(settings.hotkey_mods), L"0");
+    CHECK_EQ(std::to_wstring(settings.hotkey_vk), L"0");
+    settings.hotkey_mods = MOD_CONTROL | 0x4000;  // MOD_NOREPEAT 不应落盘
+    settings.hotkey_vk = 'K';
+    settings.Normalize();
+    CHECK_EQ(std::to_wstring(settings.hotkey_mods),
+             std::to_wstring(MOD_CONTROL));
+    CHECK_EQ(std::to_wstring(settings.hotkey_vk), std::to_wstring('K'));
     CHECK_EQ(std::to_wstring(settings.occupants_refresh_seconds), L"1");
     CHECK_EQ(std::to_wstring(settings.position_mode), L"0");
     CHECK_EQ(std::to_wstring(settings.corner), L"3");
@@ -125,6 +137,8 @@ void TestSettings() {
     settings.show_other_hidden_partitions = true;
     settings.main_height_percent = 55;
     settings.occupants_refresh_seconds = 5;
+    settings.hotkey_mods = MOD_CONTROL | MOD_ALT;
+    settings.hotkey_vk = 'U';
     settings.has_last_position = true;
     settings.last_x = -120;
     settings.last_y = 240;
@@ -151,6 +165,9 @@ void TestSettings() {
         CHECK(loaded.show_other_hidden_partitions);
         CHECK_EQ(std::to_wstring(loaded.main_height_percent), L"55");
         CHECK_EQ(std::to_wstring(loaded.occupants_refresh_seconds), L"5");
+        CHECK_EQ(std::to_wstring(loaded.hotkey_mods),
+                 std::to_wstring(MOD_CONTROL | MOD_ALT));
+        CHECK_EQ(std::to_wstring(loaded.hotkey_vk), std::to_wstring('U'));
         CHECK(loaded.has_last_position);
         CHECK_EQ(std::to_wstring(loaded.last_x), L"-120");
         CHECK_EQ(std::to_wstring(loaded.last_y), L"240");

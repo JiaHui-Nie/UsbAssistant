@@ -29,6 +29,8 @@ constexpr float kSubToggleWidth = 36.0f;
 constexpr float kSubToggleHeight = 20.0f;
 constexpr float kChoiceWidth = 132.0f;
 constexpr float kChoiceHeight = 27.0f;
+constexpr float kShortcutWidth = 160.0f;
+constexpr float kHintRowHeight = 26.0f;
 
 // 命中区域只覆盖控件本身；仅把高度补到至少 28dip，保证触摸可点。
 D2D1_RECT_F ControlHitRect(const D2D1_RECT_F& rect) {
@@ -52,6 +54,7 @@ enum Row {
     RowAutoStart = 0,
     RowAutoCheckUpdates,
     RowTopMost,
+    RowShortcut,
     RowPosition,
     RowCapacity,
     RowCloseAction,
@@ -64,7 +67,95 @@ enum Row {
     RowHiddenEsp = 100,
     RowHiddenMsr,
     RowHiddenOther,
+    RowShortcutHint = 200,
 };
+
+bool IsHintRow(int row) { return row == RowShortcutHint; }
+
+bool IsModifierKey(int vk) {
+    switch (vk) {
+        case VK_SHIFT:
+        case VK_LSHIFT:
+        case VK_RSHIFT:
+        case VK_CONTROL:
+        case VK_LCONTROL:
+        case VK_RCONTROL:
+        case VK_MENU:
+        case VK_LMENU:
+        case VK_RMENU:
+        case VK_LWIN:
+        case VK_RWIN:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool IsExtendedKey(int vk) {
+    switch (vk) {
+        case VK_INSERT:
+        case VK_DELETE:
+        case VK_HOME:
+        case VK_END:
+        case VK_PRIOR:
+        case VK_NEXT:
+        case VK_LEFT:
+        case VK_RIGHT:
+        case VK_UP:
+        case VK_DOWN:
+        case VK_NUMLOCK:
+        case VK_DIVIDE:
+        case VK_RCONTROL:
+        case VK_RMENU:
+        case VK_LWIN:
+        case VK_RWIN:
+        case VK_APPS:
+            return true;
+        default:
+            return false;
+    }
+}
+
+std::wstring KeyName(int vk) {
+    const UINT scan = MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC);
+    LONG key_data = static_cast<LONG>(scan & 0xFF) << 16;
+    if (IsExtendedKey(vk)) key_data |= 1L << 24;
+    wchar_t buffer[64] = {};
+    const int length = GetKeyNameTextW(key_data, buffer, 64);
+    if (length > 0) {
+        return std::wstring(buffer, static_cast<std::size_t>(length));
+    }
+    if (vk >= 'A' && vk <= 'Z') {
+        return std::wstring(1, static_cast<wchar_t>(vk));
+    }
+    if (vk >= '0' && vk <= '9') {
+        return std::wstring(1, static_cast<wchar_t>(vk));
+    }
+    return L"按键";
+}
+
+std::wstring FormatHotkey(int mods, int vk) {
+    if (vk == 0) return L"未设置";
+    std::wstring text;
+    if (mods & MOD_CONTROL) text += L"Ctrl+";
+    if (mods & MOD_ALT) text += L"Alt+";
+    if (mods & MOD_SHIFT) text += L"Shift+";
+    if (mods & MOD_WIN) text += L"Win+";
+    text += KeyName(vk);
+    return text;
+}
+
+int CurrentModifiers() {
+    int mods = 0;
+    if (GetKeyState(VK_CONTROL) & 0x8000) mods |= MOD_CONTROL;
+    if (GetKeyState(VK_MENU) & 0x8000) mods |= MOD_ALT;
+    if (GetKeyState(VK_SHIFT) & 0x8000) mods |= MOD_SHIFT;
+    if ((GetKeyState(VK_LWIN) & 0x8000) ||
+        (GetKeyState(VK_RWIN) & 0x8000)) {
+        mods |= MOD_WIN;
+    }
+    return mods;
+}
 
 struct SubRowSpec {
     int row;
@@ -86,6 +177,7 @@ constexpr RowSpec kRows[kRowCount] = {
     {L"开机自启动", true},
     {L"启动时检查更新", true},
     {L"窗口始终置顶", true},
+    {L"快捷键", false},
     {L"窗口默认位置", false},
     {L"容量显示风格", false},
     {L"关闭按钮的功能", false},
@@ -629,16 +721,20 @@ SettingsWindow::~SettingsWindow() { ReleaseTarget(); }
 bool SettingsWindow::Open(HINSTANCE instance, HWND owner, ID2D1Factory* d2d,
                           IDWriteFactory* dwrite, const Fonts* fonts,
                           const Palette& palette, const Settings& settings,
-                          ChangeHandler on_change, CloseHandler on_close) {
+                          ChangeHandler on_change, HotkeyHandler on_hotkey,
+                          CloseHandler on_close) {
     if (hwnd_) {
         settings_ = settings;
         palette_ = palette;
         on_change_ = std::move(on_change);
+        on_hotkey_ = std::move(on_hotkey);
         on_close_ = std::move(on_close);
         dragging_ = false;
         tracking_leave_ = false;
         hover_row_ = -1;
         close_hover_ = false;
+        clear_hover_ = false;
+        capturing_hotkey_ = false;
         ShowWindow(hwnd_, SW_SHOW);
         RaiseToFront();
         InvalidateRect(hwnd_, nullptr, FALSE);
@@ -652,6 +748,7 @@ bool SettingsWindow::Open(HINSTANCE instance, HWND owner, ID2D1Factory* d2d,
     palette_ = palette;
     settings_ = settings;
     on_change_ = std::move(on_change);
+    on_hotkey_ = std::move(on_hotkey);
     on_close_ = std::move(on_close);
 
     static bool registered = false;
@@ -883,10 +980,11 @@ void SettingsWindow::PaintRows(ID2D1RenderTarget* target,
         const D2D1_RECT_F rect = RowRect(row);
         if (rect.bottom < kCardTop || rect.top > view_height_) continue;
         const bool enabled =
-            !IsSubRow(row) || settings_.show_hidden_partitions;
+            !IsHintRow(row) &&
+            (!IsSubRow(row) || settings_.show_hidden_partitions);
         PaintRow(target, brush, row, rect, row == hover_row_, enabled);
-        if (!IsSubRow(row) && i + 1 < order.size() &&
-            !IsSubRow(order[i + 1])) {
+        if (!IsSubRow(row) && !IsHintRow(row) && i + 1 < order.size() &&
+            !IsSubRow(order[i + 1]) && !IsHintRow(order[i + 1])) {
             brush->SetColor(WithAlpha(palette_.text_primary, 0.05f));
             target->DrawLine({rect.left + 16.0f, rect.bottom},
                              {rect.right - 16.0f, rect.bottom}, brush, 1.0f);
@@ -898,6 +996,15 @@ void SettingsWindow::PaintRow(ID2D1RenderTarget* target,
                               ID2D1SolidColorBrush* brush, int row,
                               const D2D1_RECT_F& rect, bool hovered,
                               bool enabled) {
+    if (IsHintRow(row)) {
+        DrawText(target, brush, L"快捷键用于快速显示或隐藏主面板",
+                 fonts_->meta,
+                 Rect(rect.left + 16.0f, rect.top, rect.right - 16.0f,
+                      rect.bottom),
+                 palette_.text_tertiary);
+        return;
+    }
+
     if (hovered && enabled) {
         FillRound(target, brush, rect, 8.0f,
                   WithAlpha(palette_.hover_fill, 0.7f));
@@ -934,6 +1041,49 @@ void SettingsWindow::PaintRow(ID2D1RenderTarget* target,
              Rect(rect.left + 16.0f, rect.top, rect.right - 160.0f,
                   rect.bottom),
              palette_.text_primary);
+
+    if (row == RowShortcut) {
+        const D2D1_RECT_F pill = ShortcutRect(row);
+        const bool has_value = settings_.hotkey_vk != 0;
+        FillRound(target, brush, pill, 8.0f,
+                  capturing_hotkey_ ? palette_.accent_soft
+                                    : palette_.secondary_button);
+        if (capturing_hotkey_) {
+            brush->SetColor(WithAlpha(palette_.accent, 0.85f));
+            target->DrawRoundedRectangle(
+                D2D1::RoundedRect(pill, 8.0f, 8.0f), brush, 1.2f);
+        }
+
+        const bool show_clear = has_value || capturing_hotkey_;
+        D2D1_RECT_F text_rect = pill;
+        if (show_clear) text_rect.right -= 25.0f;
+        const std::wstring text =
+            capturing_hotkey_
+                ? L"请按下快捷键…"
+                : FormatHotkey(settings_.hotkey_mods, settings_.hotkey_vk);
+        DrawText(target, brush, text.c_str(), fonts_->button, text_rect,
+                 capturing_hotkey_ ? palette_.accent
+                                   : (has_value ? palette_.text_primary
+                                                : palette_.text_tertiary));
+
+        if (show_clear) {
+            const D2D1_RECT_F clear = ShortcutClearRect(row);
+            if (clear_hover_) {
+                FillRound(target, brush, clear, 6.0f,
+                          WithAlpha(palette_.danger, 0.10f));
+            }
+            const float cx = (clear.left + clear.right) * 0.5f;
+            const float cy = (clear.top + clear.bottom) * 0.5f;
+            brush->SetColor(clear_hover_
+                                ? palette_.danger
+                                : WithAlpha(palette_.text_secondary, 0.85f));
+            target->DrawLine({cx - 3.5f, cy - 3.5f}, {cx + 3.5f, cy + 3.5f},
+                             brush, 1.4f);
+            target->DrawLine({cx + 3.5f, cy - 3.5f}, {cx - 3.5f, cy + 3.5f},
+                             brush, 1.4f);
+        }
+        return;
+    }
 
     if (kRows[row].toggle) {
         DrawSwitch(target, brush, ToggleRect(row),
@@ -982,10 +1132,13 @@ void SettingsWindow::PaintRow(ID2D1RenderTarget* target,
 D2D1_RECT_F SettingsWindow::RowRect(int row) const {
     float top = kCardTop + 8.0f - scroll_;
     for (const int candidate : RowOrder()) {
-        const float height = IsSubRow(candidate) ? kSubRowHeight : kRowHeight;
+        const float height = IsHintRow(candidate)
+                                 ? kHintRowHeight
+                                 : (IsSubRow(candidate) ? kSubRowHeight
+                                                        : kRowHeight);
         if (candidate == row) {
-            const float left =
-                kSidePad + 8.0f + (IsSubRow(row) ? kSubIndent : 0.0f);
+            const float left = kSidePad + 8.0f +
+                               (IsSubRow(row) ? kSubIndent : 0.0f);
             return Rect(left, top, kWidth - kSidePad - 8.0f, top + height);
         }
         top += height;
@@ -993,13 +1146,16 @@ D2D1_RECT_F SettingsWindow::RowRect(int row) const {
     return {};
 }
 
-bool SettingsWindow::IsSubRow(int row) { return row >= RowHiddenEsp; }
+bool SettingsWindow::IsSubRow(int row) {
+    return row >= RowHiddenEsp && row < RowShortcutHint;
+}
 
 std::vector<int> SettingsWindow::RowOrder() const {
     std::vector<int> order;
-    order.reserve(kRowCount + std::size(kSubRows));
+    order.reserve(kRowCount + std::size(kSubRows) + 1);
     for (int row = 0; row < kRowCount; ++row) {
         order.push_back(row);
+        if (row == RowShortcut) order.push_back(RowShortcutHint);
         if (row == RowHiddenPartitions && expanded_) {
             for (const auto& sub : kSubRows) order.push_back(sub.row);
         }
@@ -1010,13 +1166,16 @@ std::vector<int> SettingsWindow::RowOrder() const {
 float SettingsWindow::ContentHeight() const {
     float height = 8.0f + 8.0f;
     for (const int row : RowOrder()) {
-        height += IsSubRow(row) ? kSubRowHeight : kRowHeight;
+        height += IsHintRow(row) ? kHintRowHeight
+                                 : (IsSubRow(row) ? kSubRowHeight
+                                                  : kRowHeight);
     }
     return height;
 }
 
 float SettingsWindow::BaseContentHeight() const {
-    return 8.0f + 8.0f + kRowHeight * static_cast<float>(kRowCount);
+    return 8.0f + 8.0f + kRowHeight * static_cast<float>(kRowCount) +
+           kHintRowHeight;
 }
 
 void SettingsWindow::UpdateScrollBounds() {
@@ -1039,6 +1198,22 @@ D2D1_RECT_F SettingsWindow::ChoiceRect(int row) const {
     const float center = (rect.top + rect.bottom) * 0.5f;
     return Rect(rect.right - 16.0f - kChoiceWidth, center - kChoiceHeight * 0.5f,
                 rect.right - 16.0f, center + kChoiceHeight * 0.5f);
+}
+
+D2D1_RECT_F SettingsWindow::ShortcutRect(int row) const {
+    const D2D1_RECT_F rect = RowRect(row);
+    const float center = (rect.top + rect.bottom) * 0.5f;
+    return Rect(rect.right - 16.0f - kShortcutWidth,
+                center - kChoiceHeight * 0.5f, rect.right - 16.0f,
+                center + kChoiceHeight * 0.5f);
+}
+
+D2D1_RECT_F SettingsWindow::ShortcutClearRect(int row) const {
+    const D2D1_RECT_F pill = ShortcutRect(row);
+    constexpr float kSize = 20.0f;
+    const float top = (pill.top + pill.bottom - kSize) * 0.5f;
+    return Rect(pill.right - kSize - 3.0f, top, pill.right - 3.0f,
+                top + kSize);
 }
 
 D2D1_RECT_F SettingsWindow::CloseRect() const {
@@ -1138,6 +1313,43 @@ void SettingsWindow::ChooseRow(int row) {
     }
 }
 
+void SettingsWindow::HandleHotkeyCapture(int vk) {
+    if (vk == VK_ESCAPE) {
+        capturing_hotkey_ = false;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+    if (vk == VK_PROCESSKEY || IsModifierKey(vk)) return;
+
+    const int mods = CurrentModifiers();
+    if ((mods & (MOD_CONTROL | MOD_ALT | MOD_WIN)) == 0) {
+        MessageBoxW(hwnd_,
+                    L"全局快捷键需要同时按住 Ctrl、Alt 或 Win 键，\n"
+                    L"否则会影响正常打字。按 Esc 可取消。",
+                    L"U 盘助手", MB_ICONINFORMATION | MB_OK);
+        return;
+    }
+    ApplyHotkey(mods, vk);
+}
+
+void SettingsWindow::ClearHotkey() { ApplyHotkey(0, 0); }
+
+void SettingsWindow::ApplyHotkey(int mods, int vk) {
+    const std::wstring error =
+        on_hotkey_ ? on_hotkey_(mods, vk) : std::wstring();
+    if (!error.empty()) {
+        MessageBoxW(hwnd_, error.c_str(), L"U 盘助手",
+                    MB_ICONWARNING | MB_OK);
+        capturing_hotkey_ = false;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+    settings_.hotkey_mods = mods;
+    settings_.hotkey_vk = vk;
+    capturing_hotkey_ = false;
+    NotifyChange();
+}
+
 void SettingsWindow::NotifyChange() {
     settings_.Normalize();
     if (on_change_) on_change_(settings_);
@@ -1184,6 +1396,18 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             if (menu_open_) return 0;
             const float x = GET_X_LPARAM(lparam) / scale_;
             const float y = GET_Y_LPARAM(lparam) / scale_;
+            if (capturing_hotkey_) {
+                const int hit = HitRow(x, y);
+                const bool on_control =
+                    hit == RowShortcut &&
+                    (Contains(ControlHitRect(ShortcutRect(hit)), x, y) ||
+                     Contains(ControlHitRect(ShortcutClearRect(hit)), x, y));
+                if (!on_control) {
+                    capturing_hotkey_ = false;
+                    clear_hover_ = false;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+            }
             if (Contains(CloseRect(), x, y)) {
                 Close();
                 return 0;
@@ -1198,6 +1422,17 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             const int row = HitRow(x, y);
             if (row < 0) return 0;
 
+            if (row == RowShortcut) {
+                if ((settings_.hotkey_vk != 0 || capturing_hotkey_) &&
+                    Contains(ControlHitRect(ShortcutClearRect(row)), x, y)) {
+                    ClearHotkey();
+                } else if (Contains(ControlHitRect(ShortcutRect(row)), x, y)) {
+                    capturing_hotkey_ = true;
+                    clear_hover_ = false;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                return 0;
+            }
             if (IsSubRow(row)) {
                 if (settings_.show_hidden_partitions &&
                     Contains(ControlHitRect(ToggleRect(row)), x, y)) {
@@ -1252,9 +1487,20 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
                 hover_row_ = row;
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
+            const bool clear =
+                row == RowShortcut &&
+                (settings_.hotkey_vk != 0 || capturing_hotkey_) &&
+                Contains(ControlHitRect(ShortcutClearRect(row)), x, y);
+            if (clear != clear_hover_) {
+                clear_hover_ = clear;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
             bool interactive = false;
             if (row >= 0) {
-                if (IsSubRow(row)) {
+                if (row == RowShortcut) {
+                    interactive =
+                        Contains(ControlHitRect(ShortcutRect(row)), x, y);
+                } else if (IsSubRow(row)) {
                     interactive =
                         settings_.show_hidden_partitions &&
                         Contains(ControlHitRect(ToggleRect(row)), x, y);
@@ -1276,6 +1522,7 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
         case WM_MOUSELEAVE:
             tracking_leave_ = false;
             close_hover_ = false;
+            clear_hover_ = false;
             hover_row_ = -1;
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
@@ -1306,12 +1553,25 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             return 0;
         }
 
+        case WM_SYSKEYDOWN:
         case WM_KEYDOWN:
-            if (wparam == VK_ESCAPE) {
+            if (capturing_hotkey_) {
+                HandleHotkeyCapture(static_cast<int>(wparam));
+                return 0;
+            }
+            if (message == WM_KEYDOWN && wparam == VK_ESCAPE) {
                 // 下拉展开时 Esc 只关闭下拉，由弹出菜单自己处理。
                 if (menu_open_) return 0;
                 Close();
                 return 0;
+            }
+            break;
+
+        case WM_KILLFOCUS:
+            if (capturing_hotkey_) {
+                capturing_hotkey_ = false;
+                clear_hover_ = false;
+                InvalidateRect(hwnd, nullptr, FALSE);
             }
             break;
 

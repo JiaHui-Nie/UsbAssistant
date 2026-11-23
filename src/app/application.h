@@ -63,6 +63,9 @@ private:
     void ApplyRefreshTimer();
     void ApplySettings(const Settings& settings);
     void ShowSettings();
+    // 校验并注册全局快捷键；成功返回空字符串，失败返回给用户看的原因。
+    std::wstring ChangeHotkey(int mods, int vk);
+    void SyncHotkey(bool startup);
     void ShowAbout();
     // 启动独立升级器；autocheck 表示只在新版本出现时才弹出窗口。
     void LaunchUpdater(bool autocheck);
@@ -142,6 +145,10 @@ private:
 
     SettingsStore store_;
     Settings settings_;
+    // 当前实际注册成功的全局快捷键，用于避免重复注册和失败回滚。
+    int hotkey_mods_ = 0;
+    int hotkey_vk_ = 0;
+    bool hotkey_registered_ = false;
     ui::Palette palette_ = ui::MakePalette(false);
     ui::Fonts fonts_;
     ui::Canvas canvas_;
