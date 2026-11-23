@@ -319,13 +319,6 @@ void MainView::Paint(Canvas& canvas, float dpi, float window_alpha) const {
     }
 
     FillRound(target, brush, layout_.panel, kPanelRadius, palette_.panel);
-    // 面板现在与窗口同尺寸，描边若仍按面板矩形绘制，外侧半个像素会被窗口
-    // 裁掉。内缩 0.5dip 并相应减小圆角，保证边框完整可见。
-    const D2D1_RECT_F border =
-        Rect(layout_.panel.left + 0.5f, layout_.panel.top + 0.5f,
-             layout_.panel.right - 0.5f, layout_.panel.bottom - 0.5f);
-    StrokeRound(target, brush, border, kPanelRadius - 0.5f,
-                palette_.panel_border, 1.0f);
 
     PaintHeader(target, brush);
 

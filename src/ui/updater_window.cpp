@@ -361,10 +361,6 @@ void UpdaterWindow::Paint() {
     }
 
     // macOS 风格：内容居中，按钮右下角对齐。
-    const D2D1_RECT_F frame =
-        Rect(0.5f, 0.5f, kWidth - 0.5f, kHeight - 0.5f);
-    StrokeRound(target_, brush, frame, 16.0f, palette_.panel_border, 1.0f);
-
     const D2D1_RECT_F close = CloseRect();
     if (hover_ == Hover::Close) {
         FillRound(target_, brush, close, 13.0f,

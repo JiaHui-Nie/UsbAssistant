@@ -202,10 +202,6 @@ void MessageDialog::Paint() {
         return;
     }
 
-    const D2D1_RECT_F frame = Rect(0.5f, 0.5f, Width() - 0.5f,
-                                   Height() - 0.5f);
-    StrokeRound(target_, brush, frame, 16.0f, palette_.panel_border, 1.0f);
-
     DrawText(target_, brush, title_, fonts_->title,
              Rect(kSidePad, 12.0f, kWidth - 60.0f, 38.0f),
              palette_.text_primary);
