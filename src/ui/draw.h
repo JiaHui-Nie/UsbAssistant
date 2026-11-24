@@ -63,4 +63,7 @@ void DrawCheckBox(ID2D1RenderTarget* target, ID2D1SolidColorBrush* brush,
 bool CreateBitmapFromIcon(ID2D1RenderTarget* target, HICON icon,
                           ID2D1Bitmap** bitmap);
 
+// 惰性初始化 GDI+（图标与悬浮条的抗锯齿绘制共用）。
+bool EnsureGdiplus();
+
 }  // namespace usb::ui

@@ -318,20 +318,24 @@ void DrawCheckBox(ID2D1RenderTarget* target, ID2D1SolidColorBrush* brush,
     }
 }
 
+bool EnsureGdiplus() {
+    static ULONG_PTR gdiplus_token = 0;
+    if (gdiplus_token != 0) return true;
+    Gdiplus::GdiplusStartupInput input;
+    if (Gdiplus::GdiplusStartup(&gdiplus_token, &input, nullptr) !=
+        Gdiplus::Ok) {
+        gdiplus_token = 0;
+        return false;
+    }
+    return true;
+}
+
 bool CreateBitmapFromIcon(ID2D1RenderTarget* target, HICON icon,
                           ID2D1Bitmap** bitmap) {
     if (!target || !icon || !bitmap) return false;
     *bitmap = nullptr;
 
-    static ULONG_PTR gdiplus_token = 0;
-    if (gdiplus_token == 0) {
-        Gdiplus::GdiplusStartupInput input;
-        if (Gdiplus::GdiplusStartup(&gdiplus_token, &input, nullptr) !=
-            Gdiplus::Ok) {
-            gdiplus_token = 0;
-            return false;
-        }
-    }
+    if (!EnsureGdiplus()) return false;
 
     Gdiplus::Bitmap* source = Gdiplus::Bitmap::FromHICON(icon);
     if (!source) return false;

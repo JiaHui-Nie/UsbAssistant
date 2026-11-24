@@ -2,6 +2,8 @@
 #pragma once
 
 #include <windows.h>
+#include <d2d1.h>
+#include <d2d1helper.h>
 
 namespace usb::ui {
 
@@ -14,12 +16,11 @@ public:
     EdgeBar(const EdgeBar&) = delete;
     EdgeBar& operator=(const EdgeBar&) = delete;
 
-    void Show(HINSTANCE instance, HWND owner, HICON icon, int x, int y, int side,
-              bool dark);
+    void Show(HINSTANCE instance, HWND owner, int x, int y, int side, bool dark,
+              const D2D1_COLOR_F& background);
     void Hide();
     void Destroy();
-    void SetTheme(bool dark);
-    void SetIcon(HICON icon) { icon_ = icon; }
+    void SetTheme(bool dark, const D2D1_COLOR_F& background);
     bool visible() const { return hwnd_ != nullptr; }
     HWND hwnd() const { return hwnd_; }
 
@@ -28,12 +29,12 @@ private:
                                     LPARAM lparam);
     LRESULT HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
                           LPARAM lparam);
-    void Paint(HDC dc);
+    void Present();
 
     HWND hwnd_ = nullptr;
     HWND owner_ = nullptr;
-    HICON icon_ = nullptr;
     bool dark_ = false;
+    D2D1_COLOR_F background_ = D2D1::ColorF(D2D1::ColorF::White);
     int side_ = 42;
 };
 

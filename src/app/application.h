@@ -162,7 +162,6 @@ private:
     IDWriteFactory* dwrite_ = nullptr;
     HICON icon_small_ = nullptr;
     HICON icon_large_ = nullptr;
-    HICON icon_edge_ = nullptr;
     NOTIFYICONDATAW tray_data_ = {};
     bool tray_registered_ = false;
     ULONG shell_notify_id_ = 0;

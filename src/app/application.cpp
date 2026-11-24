@@ -280,9 +280,6 @@ Application::~Application() {
     }
     if (icon_small_) DestroyIcon(icon_small_);
     if (icon_large_ && icon_large_ != icon_small_) DestroyIcon(icon_large_);
-    if (icon_edge_ && icon_edge_ != icon_large_ && icon_edge_ != icon_small_) {
-        DestroyIcon(icon_edge_);
-    }
     if (com_initialized_) CoUninitialize();
 }
 
@@ -331,11 +328,8 @@ bool Application::Initialize(HINSTANCE instance, bool start_hidden) {
         LoadImageW(instance_, MAKEINTRESOURCEW(1), IMAGE_ICON, 16, 16, 0));
     icon_large_ = static_cast<HICON>(
         LoadImageW(instance_, MAKEINTRESOURCEW(1), IMAGE_ICON, 32, 32, 0));
-    icon_edge_ = static_cast<HICON>(
-        LoadImageW(instance_, MAKEINTRESOURCEW(1), IMAGE_ICON, 64, 64, 0));
     if (!icon_small_) icon_small_ = CopyIcon(LoadIconW(nullptr, IDI_APPLICATION));
     if (!icon_large_) icon_large_ = CopyIcon(icon_small_);
-    if (!icon_edge_) icon_edge_ = CopyIcon(icon_large_);
 
     taskbar_created_message_ = RegisterWindowMessageW(L"TaskbarCreated");
     exit_request_message_ = RegisterWindowMessageW(kExitRequestMessageName);
@@ -591,7 +585,7 @@ void Application::UpdateTheme() {
     view_.SetPalette(palette_);
     settings_window_.SetPalette(palette_);
     about_window_.SetPalette(palette_);
-    edge_bar_.SetTheme(dark);
+    edge_bar_.SetTheme(dark, palette_.card);
     PaintNow();
 }
 
@@ -1875,7 +1869,8 @@ void Application::CollapseToEdgeBar(int edge) {
     KillTimer(hwnd_, kTimerEmptyHide);
     empty_hide_armed_ = false;
     ShowWindow(hwnd_, SW_HIDE);
-    edge_bar_.Show(instance_, hwnd_, icon_edge_, x, y, side, palette_.dark);
+    edge_bar_.Show(instance_, hwnd_, x, y, side, palette_.dark,
+                   palette_.card);
 }
 
 void Application::RestoreFromEdgeBar(bool activate) {
