@@ -164,6 +164,13 @@ def render(tag: str, from_tag: str | None, entries: list[tuple[str, str]]) -> st
 
 
 def main() -> int:
+    # Windows 下 stdio 默认跟随本地代码页（CI runner 是 cp1252），中文提交
+    # 信息在 print 时会抛 UnicodeEncodeError；统一改成 UTF-8 输出。
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--tag",

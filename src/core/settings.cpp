@@ -99,6 +99,7 @@ void Settings::Normalize() {
     close_action = close_action == 1 ? 1 : 0;
     empty_hide_seconds = std::clamp(empty_hide_seconds, 0, 86400);
     main_height_percent = std::clamp(main_height_percent, 20, 100);
+    update_frequency = std::clamp(update_frequency, 0, 4);
     hotkey_mods &= (MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN);
     if (hotkey_vk <= 0 || hotkey_vk > 0xFF) hotkey_vk = 0;
     // 全局快捷键必须带 Ctrl/Alt/Win，避免吞掉正常输入；不合法时视为关闭。
@@ -122,6 +123,8 @@ Settings SettingsStore::Load() const {
     settings.refresh_seconds = ReadInt(path_, L"RefreshSec", 3);
     settings.auto_check_updates =
         ReadInt(path_, L"AutoCheckUpdates", 1) != 0;
+    settings.update_frequency = ReadInt(path_, L"UpdateFrequency", 0);
+    settings.silent_update = ReadInt(path_, L"SilentUpdate", 0) != 0;
     settings.occupants_refresh_seconds =
         ReadInt(path_, L"OccupantsRefreshSec", 1);
     settings.capacity_base = ReadInt(path_, L"CapacityBase", 1024);
@@ -149,7 +152,8 @@ Settings SettingsStore::Load() const {
     USB_LOG_INFO(L"config",
                  L"加载配置：%s version=%d top_most=%d pos_mode=%d corner=%d "
                  L"refresh=%d close_action=%d hidden=%d esp=%d msr=%d other=%d "
-                 L"edge=%d height=%d occupants_refresh=%d auto_update=%d",
+                 L"edge=%d height=%d occupants_refresh=%d auto_update=%d "
+                 L"update_freq=%d silent_update=%d",
                  path_.c_str(), config_version, settings.top_most ? 1 : 0,
                  settings.position_mode, settings.corner,
                  settings.refresh_seconds, settings.close_action,
@@ -160,7 +164,9 @@ Settings SettingsStore::Load() const {
                  settings.edge_collapse ? 1 : 0,
                  settings.main_height_percent,
                  settings.occupants_refresh_seconds,
-                 settings.auto_check_updates ? 1 : 0);
+                 settings.auto_check_updates ? 1 : 0,
+                 settings.update_frequency,
+                 settings.silent_update ? 1 : 0);
 
     // v2 起默认“关闭 = 隐藏到托盘”。旧配置没有版本号，迁移一次，
     // 让已经安装过的用户也能保持托盘常驻；迁移后用户仍可在设置中改回退出。
@@ -181,6 +187,8 @@ bool SettingsStore::Save(const Settings& settings) const {
     ok = WriteInt(path_, L"AutoCheckUpdates",
                   settings.auto_check_updates ? 1 : 0) &&
          ok;
+    ok = WriteInt(path_, L"UpdateFrequency", settings.update_frequency) && ok;
+    ok = WriteInt(path_, L"SilentUpdate", settings.silent_update ? 1 : 0) && ok;
     ok = WriteInt(path_, L"OccupantsRefreshSec",
                   settings.occupants_refresh_seconds) &&
          ok;

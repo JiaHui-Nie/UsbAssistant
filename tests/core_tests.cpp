@@ -19,6 +19,7 @@
 #include "core/storage.h"
 #include "core/text.h"
 #include "core/update.h"
+#include "core/update_schedule.h"
 #include "core/version.h"
 #include "core/zip.h"
 
@@ -86,6 +87,8 @@ void TestText() {
 void TestSettings() {
     CHECK(usb::Settings().close_action == 1);  // 默认关闭 = 隐藏到托盘
     CHECK(usb::Settings().auto_check_updates);
+    CHECK_EQ(std::to_wstring(usb::Settings().update_frequency), L"0");
+    CHECK(!usb::Settings().silent_update);
     CHECK_EQ(std::to_wstring(usb::Settings().occupants_refresh_seconds), L"1");
     CHECK(usb::Settings().show_esp_partitions);
     CHECK(usb::Settings().show_msr_partitions);
@@ -102,6 +105,7 @@ void TestSettings() {
     settings.occupants_refresh_seconds = 0;
     settings.hotkey_mods = MOD_SHIFT;
     settings.hotkey_vk = 'U';
+    settings.update_frequency = 9;  // 越界频率归一化到“每月”
     settings.Normalize();
     // 没有 Ctrl/Alt/Win 的全局快捷键不合法，必须关闭。
     CHECK_EQ(std::to_wstring(settings.hotkey_mods), L"0");
@@ -119,6 +123,7 @@ void TestSettings() {
     CHECK_EQ(std::to_wstring(settings.main_height_percent), L"20");
     CHECK_EQ(std::to_wstring(settings.close_action), L"0");
     CHECK_EQ(std::to_wstring(settings.refresh_seconds), L"0");
+    CHECK_EQ(std::to_wstring(settings.update_frequency), L"4");
 
     const std::wstring path = TempConfigPath();
     settings = usb::Settings();
@@ -137,6 +142,8 @@ void TestSettings() {
     settings.show_other_hidden_partitions = true;
     settings.main_height_percent = 55;
     settings.occupants_refresh_seconds = 5;
+    settings.update_frequency = 2;
+    settings.silent_update = true;
     settings.hotkey_mods = MOD_CONTROL | MOD_ALT;
     settings.hotkey_vk = 'U';
     settings.has_last_position = true;
@@ -154,6 +161,8 @@ void TestSettings() {
         CHECK_EQ(std::to_wstring(loaded.corner), L"1");
         CHECK_EQ(std::to_wstring(loaded.refresh_seconds), L"8");
         CHECK(!loaded.auto_check_updates);
+        CHECK_EQ(std::to_wstring(loaded.update_frequency), L"2");
+        CHECK(loaded.silent_update);
         CHECK_EQ(std::to_wstring(loaded.capacity_base), L"1000");
         CHECK_EQ(std::to_wstring(loaded.close_action), L"1");
         CHECK(loaded.skip_close_confirm);
@@ -369,6 +378,32 @@ void TestVersionAndUpdate() {
     }
 }
 
+void TestUpdateSchedule() {
+    using namespace usb;
+    CHECK_EQ(std::to_wstring(UpdateIntervalSeconds(kUpdateOnStartup)), L"0");
+    CHECK_EQ(std::to_wstring(UpdateIntervalSeconds(kUpdateHourly)), L"3600");
+    CHECK_EQ(std::to_wstring(UpdateIntervalSeconds(kUpdateDaily)), L"86400");
+    CHECK_EQ(std::to_wstring(UpdateIntervalSeconds(kUpdateWeekly)), L"604800");
+    CHECK_EQ(std::to_wstring(UpdateIntervalSeconds(kUpdateMonthly)),
+             L"2592000");
+    // 越界频率按“启动时”处理，不会退化成永不检查。
+    CHECK_EQ(std::to_wstring(UpdateIntervalSeconds(99)), L"0");
+
+    const std::int64_t now = 1000000;
+    // 启动时模式每次启动都会检查，不看上次时间。
+    CHECK(UpdateCheckDue(kUpdateOnStartup, now, now));
+    // 没有记录时立刻检查。
+    CHECK(UpdateCheckDue(kUpdateHourly, 0, now));
+    // 还没到期就不检查。
+    CHECK(!UpdateCheckDue(kUpdateDaily, now - 3600, now));
+    CHECK(!UpdateCheckDue(kUpdateWeekly, now - 86400, now));
+    // 恰好到期（等于间隔）就检查。
+    CHECK(UpdateCheckDue(kUpdateDaily, now - 86400, now));
+    CHECK(UpdateCheckDue(kUpdateWeekly, now - 604800, now));
+    // 系统时间被回拨时不要立刻重试。
+    CHECK(!UpdateCheckDue(kUpdateHourly, now + 500, now));
+}
+
 void TestReleaseAssets() {
     using namespace usb;
     const std::string json =
@@ -556,6 +591,7 @@ int main() {
     TestHelperArguments();
     TestLogFormat();
     TestVersionAndUpdate();
+    TestUpdateSchedule();
     TestReleaseAssets();
     TestZipExtract();
     TestOccupantLiveness();

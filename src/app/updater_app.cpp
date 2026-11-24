@@ -8,6 +8,7 @@
 #include "core/app_control.h"
 #include "core/http.h"
 #include "core/log.h"
+#include "core/update_schedule.h"
 #include "core/version.h"
 #include "core/zip.h"
 #include "ui/dpi.h"
@@ -109,6 +110,32 @@ bool CopyWithRetry(const std::wstring& source, const std::wstring& target) {
     return false;
 }
 
+// 升级器替换自身：正在运行的 exe 不能删除但可以改名，所以先把本体改成
+// .old，再把新版本写成正式文件名；.old 留到下一次升级器启动时删除。
+bool ReplaceUpdaterSelf(const std::wstring& app_dir,
+                        const std::wstring& new_updater) {
+    const std::wstring target = app_dir + L"\\" + kUpdaterExeName;
+    const std::wstring backup = app_dir + L"\\" + kUpdaterOldExeName;
+
+    // 上一次留下的备份可能因为旧进程未退出而残留，先尽力清掉。
+    SetFileAttributesW(backup.c_str(), FILE_ATTRIBUTE_NORMAL);
+    DeleteFileW(backup.c_str());
+
+    if (!MoveFileExW(target.c_str(), backup.c_str(),
+                     MOVEFILE_REPLACE_EXISTING)) {
+        USB_LOG_WARN(L"update", L"升级器自我改名失败：%lu", GetLastError());
+        return false;
+    }
+    if (!CopyWithRetry(new_updater, target)) {
+        // 新版本没写成功时恢复原名，避免目录里只剩一个 .old。
+        MoveFileExW(backup.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING);
+        USB_LOG_ERROR(L"update", L"写入新版升级器失败：%lu", GetLastError());
+        return false;
+    }
+    USB_LOG_INFO(L"update", L"升级器已替换为新版本，旧版本留待下次启动清理");
+    return true;
+}
+
 }  // namespace
 
 UpdaterApp::UpdaterApp() = default;
@@ -142,23 +169,30 @@ UpdaterApp::~UpdaterApp() {
 }
 
 UpdaterApp::InitResult UpdaterApp::Initialize(HINSTANCE instance,
-                                              bool autocheck) {
-    autocheck_ = autocheck;
+                                              UpdateMode mode) {
+    mode_ = mode;
+    autocheck_ = mode != UpdateMode::Visible;
 
     // 单实例：重复启动不再创建窗口，把请求转交给已有实例后静默退出。
     // 互斥体只负责覆盖“两个进程同时启动”的竞争；具体请求仍通过窗口
     // 消息转交，避免两个进程同时下载/安装更新包。
+    // 静默模式没有窗口可转交，重复启动直接退出。
     instance_mutex_ = CreateMutexW(nullptr, FALSE, kUpdaterMutexName);
     const DWORD mutex_error = GetLastError();
     if (!instance_mutex_) {
         if (mutex_error == ERROR_ACCESS_DENIED) {
             // 已有实例权限更高（例如以管理员身份运行），打不开互斥体。
-            WakeExistingInstance(autocheck);
+            if (IsSilent()) return InitResult::AlreadyRunning;
+            WakeExistingInstance(autocheck_);
             return InitResult::AlreadyRunning;
         }
         USB_LOG_WARN(L"update", L"创建单实例互斥体失败：%lu", mutex_error);
     } else if (mutex_error == ERROR_ALREADY_EXISTS) {
-        WakeExistingInstance(autocheck);
+        if (IsSilent()) {
+            USB_LOG_INFO(L"update", L"已有升级器在运行，本次静默更新请求退出");
+            return InitResult::AlreadyRunning;
+        }
+        WakeExistingInstance(autocheck_);
         return InitResult::AlreadyRunning;
     }
 
@@ -170,26 +204,29 @@ UpdaterApp::InitResult UpdaterApp::Initialize(HINSTANCE instance,
     // 只用于定位：升级器不再读取主程序的置顶状态，窗口始终置顶。
     const RunningApp running = FindRunningApp();
 
-    const GUID d2d1_factory_iid = {
-        0x06152247, 0x6f50, 0x465a,
-        {0x92, 0x45, 0x11, 0x8b, 0xfd, 0x3b, 0x60, 0x07}};
-    if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,
-                                 d2d1_factory_iid, nullptr,
-                                 reinterpret_cast<void**>(&d2d_))) ||
-        !d2d_) {
-        return InitResult::Failed;
-    }
+    // 界面资源只在需要显示窗口时创建；静默更新完全不加载 Direct2D。
+    if (!IsSilent()) {
+        const GUID d2d1_factory_iid = {
+            0x06152247, 0x6f50, 0x465a,
+            {0x92, 0x45, 0x11, 0x8b, 0xfd, 0x3b, 0x60, 0x07}};
+        if (FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,
+                                     d2d1_factory_iid, nullptr,
+                                     reinterpret_cast<void**>(&d2d_))) ||
+            !d2d_) {
+            return InitResult::Failed;
+        }
 
-    const GUID dwrite_factory_iid = {
-        0xb859ee5a, 0xd838, 0x4b5b,
-        {0xa2, 0xe8, 0x1a, 0xdc, 0x7d, 0x93, 0xdb, 0x48}};
-    if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
-                                   dwrite_factory_iid,
-                                   reinterpret_cast<IUnknown**>(&dwrite_))) ||
-        !dwrite_) {
-        return InitResult::Failed;
+        const GUID dwrite_factory_iid = {
+            0xb859ee5a, 0xd838, 0x4b5b,
+            {0xa2, 0xe8, 0x1a, 0xdc, 0x7d, 0x93, 0xdb, 0x48}};
+        if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
+                                       dwrite_factory_iid,
+                                       reinterpret_cast<IUnknown**>(&dwrite_))) ||
+            !dwrite_) {
+            return InitResult::Failed;
+        }
+        if (!ui::CreateFonts(dwrite_, &fonts_)) return InitResult::Failed;
     }
-    if (!ui::CreateFonts(dwrite_, &fonts_)) return InitResult::Failed;
 
     static bool pump_registered = false;
     if (!pump_registered) {
@@ -210,16 +247,18 @@ UpdaterApp::InitResult UpdaterApp::Initialize(HINSTANCE instance,
         post_target_->hwnd = pump_;
     }
 
-    const HWND reference = running.window;
-    if (!window_.Open(instance, reference, !autocheck_, d2d_, dwrite_, &fonts_,
-                      palette_, [this]() { StartInstall(); },
-                      [this]() { OnWindowClosed(); })) {
-        return InitResult::Failed;
+    if (!IsSilent()) {
+        const HWND reference = running.window;
+        if (!window_.Open(instance, reference, !autocheck_, d2d_, dwrite_,
+                          &fonts_, palette_, [this]() { StartInstall(); },
+                          [this]() { OnWindowClosed(); })) {
+            return InitResult::Failed;
+        }
+        window_.SetWakeHandler(
+            [this](bool autocheck) { HandleWakeRequest(autocheck); });
+        window_.SetStage(ui::UpdaterStage::Checking, L"正在检查更新中……");
     }
-    window_.SetWakeHandler(
-        [this](bool autocheck) { HandleWakeRequest(autocheck); });
 
-    window_.SetStage(ui::UpdaterStage::Checking, L"正在检查更新中……");
     worker_.Start();
     StartCheck();
     return InitResult::Ok;
@@ -246,6 +285,8 @@ void UpdaterApp::StartCheck() {
         LatestRelease release;
         std::wstring error;
         const ReleaseFetchStatus status = FetchLatestRelease(&release, &error);
+        // 无论成功还是失败都记下时间：失败后也要等下一个周期再试。
+        RecordLastUpdateCheck(NowSeconds());
         payload->status = static_cast<int>(status);
         payload->error = error;
         if (status == ReleaseFetchStatus::Ok) {
@@ -276,31 +317,31 @@ void UpdaterApp::HandleCheckResult(int status, bool update_available,
     checking_ = false;
     if (status != static_cast<int>(ReleaseFetchStatus::Ok)) {
         if (autocheck_) {
-            window_.Close();
+            Finish();
             return;
         }
-        window_.SetStage(ui::UpdaterStage::CheckFailed,
-                         error.empty() ? L"检查更新失败。"
-                                       : L"检查更新失败：" + error);
+        ShowStage(ui::UpdaterStage::CheckFailed,
+                  error.empty() ? L"检查更新失败。"
+                                : L"检查更新失败：" + error);
         return;
     }
 
     if (!update_available) {
         if (autocheck_) {
-            window_.Close();
+            Finish();
             return;
         }
-        window_.SetStage(ui::UpdaterStage::UpToDate,
-                         L"已是最新版本(v" + version + L")。");
+        ShowStage(ui::UpdaterStage::UpToDate,
+                  L"已是最新版本(v" + version + L")。");
         return;
     }
 
     if (!has_asset) {
         if (autocheck_) {
-            window_.Close();
+            Finish();
             return;
         }
-        window_.SetStage(
+        ShowStage(
             ui::UpdaterStage::CheckFailed,
             std::wstring(L"未找到匹配当前构建(") + kBuildConfigLabel + L"-" +
                 kBuildArchLabel + L")的发布包。");
@@ -310,12 +351,22 @@ void UpdaterApp::HandleCheckResult(int status, bool update_available,
     asset_ = asset;
     USB_LOG_INFO(L"update", L"发现新版本 %s，资产 %s", version.c_str(),
                  asset.name.c_str());
-    window_.SetStage(ui::UpdaterStage::Available,
-                     L"发现新版本(v" + version + L")。");
+    ShowStage(ui::UpdaterStage::Available,
+              L"发现新版本(v" + version + L")。");
+    if (IsSilent()) {
+        // 静默更新：不询问也不显示进度，直接下载、替换并重启。
+        USB_LOG_INFO(L"update", L"静默更新：直接开始安装");
+        StartInstall();
+        return;
+    }
     if (autocheck_) window_.Show();
 }
 
 void UpdaterApp::HandleWakeRequest(bool autocheck) {
+    if (IsSilent()) {
+        USB_LOG_INFO(L"update", L"静默更新进行中，忽略重复启动请求");
+        return;
+    }
     // 已有实例被显式唤起：先显示并前置。即使本次是 --autocheck 请求，
     // 既然要唤醒已有窗口，就按可见模式处理，避免检查完又自动关闭。
     window_.Show();
@@ -360,8 +411,8 @@ void UpdaterApp::StartInstall() {
     if (installing_) return;
     installing_ = true;
     cancel_.store(false);
-    window_.SetStage(ui::UpdaterStage::Downloading, L"正在下载更新……");
-    window_.SetProgress(-1.0f);
+    ShowStage(ui::UpdaterStage::Downloading, L"正在下载更新……");
+    ShowProgress(-1.0f);
     const ReleaseAsset asset = asset_;
     worker_.Post([this, asset]() { RunInstall(asset); });
 }
@@ -446,14 +497,9 @@ void UpdaterApp::RunInstall(ReleaseAsset asset) {
         return;
     }
 
-    // 升级器不覆盖自身：把新版本放在主程序同目录，由主程序启动时换新。
-    const std::wstring pending_updater =
-        app_dir + L"\\" + kUpdaterPendingExeName;
-    const bool updater_staged = CopyWithRetry(new_updater, pending_updater);
-    if (!updater_staged) {
-        USB_LOG_WARN(L"update", L"写入升级器待生效文件失败：%lu",
-                     GetLastError());
-    }
+    // 升级器替换自身：本体改名成 .old，新版本写成正式文件名，
+    // .old 由下一次升级器启动时删除，主程序不再参与。
+    const bool updater_updated = ReplaceUpdaterSelf(app_dir, new_updater);
 
     RemoveTree(temp_root);
 
@@ -464,7 +510,7 @@ void UpdaterApp::RunInstall(ReleaseAsset asset) {
         return;
     }
 
-    if (!updater_staged) {
+    if (!updater_updated) {
         PostInstallStage(
             static_cast<int>(InstallStage::Failed),
             L"更新已完成，但升级器更新失败，请重新下载应用程序。");
@@ -472,6 +518,25 @@ void UpdaterApp::RunInstall(ReleaseAsset asset) {
     }
 
     PostInstallStage(static_cast<int>(InstallStage::Done), L"");
+}
+
+void UpdaterApp::ShowStage(ui::UpdaterStage stage, std::wstring text) {
+    if (IsSilent()) return;
+    window_.SetStage(stage, std::move(text));
+}
+
+void UpdaterApp::ShowProgress(float fraction) {
+    if (IsSilent()) return;
+    window_.SetProgress(fraction);
+}
+
+void UpdaterApp::Finish() {
+    if (IsSilent()) {
+        // 没有窗口可关，直接结束消息循环让进程退出。
+        PostQuitMessage(0);
+        return;
+    }
+    window_.Close();
 }
 
 void UpdaterApp::PostInstallStage(int kind, std::wstring text) {
@@ -516,7 +581,7 @@ LRESULT UpdaterApp::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
                           static_cast<double>(payload->received) /
                           static_cast<double>(payload->total))
                     : -1.0f;
-            window_.SetProgress(fraction);
+            ShowProgress(fraction);
             return 0;
         }
         case kMessageInstallStage: {
@@ -524,17 +589,20 @@ LRESULT UpdaterApp::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             if (!payload) return 0;
             switch (payload->kind) {
                 case InstallStage::Updating:
-                    window_.SetStage(ui::UpdaterStage::Updating,
-                                     L"正在更新……");
+                    ShowStage(ui::UpdaterStage::Updating, L"正在更新……");
                     break;
                 case InstallStage::Failed:
                     // 失败后允许重复启动请求重新检查/下载。
                     installing_ = false;
-                    window_.SetStage(ui::UpdaterStage::Failed,
-                                     payload->text);
+                    ShowStage(ui::UpdaterStage::Failed, payload->text);
+                    if (IsSilent()) PostQuitMessage(0);
                     break;
                 case InstallStage::Done:
-                    window_.CloseLater(700);
+                    if (IsSilent()) {
+                        PostQuitMessage(0);
+                    } else {
+                        window_.CloseLater(700);
+                    }
                     break;
             }
             return 0;

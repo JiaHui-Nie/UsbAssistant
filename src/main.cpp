@@ -65,8 +65,6 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
 
     auto application = std::make_unique<usb::app::Application>();
     usb::log::Init();
-    // 先应用升级器留下的新版本，再走任何启动流程（含自动更新检测）。
-    usb::ApplyPendingUpdaterUpdate();
     if (!application->Initialize(instance, autostart)) {
         usb::log::Shutdown();
         MessageBoxW(nullptr,

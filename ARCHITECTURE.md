@@ -36,6 +36,8 @@ core/* 不依赖 ui/* 或 app/* ─────────┘
 | `eject.h/.cpp` | PnP → 介质 → 强制锁定/卸载三级弹出流程与结果分类 | 不弹对话框 |
 | `occupants.h/.cpp` | 句柄表扫描、进程图标/名称、结束占用、关闭资源管理器窗口 | 不结束 explorer / 系统关键进程 |
 | `elevation.h/.cpp` | `--helper` 参数、结果文件、UAC 启动与等待 | 不创建主窗口 |
+| `update.h/.cpp` | Release 查询、版本比较、发布包匹配 | 不下载、不解压 |
+| `update_schedule.h/.cpp` | 更新频率间隔与上次检查时间的读写 | 不发网络请求、不弹 UI |
 
 `core` 的公开接口都是“输入数据 → 返回数据”，方便单元测试。`tests/core_tests.cpp` 不创建窗口即可运行。
 
@@ -178,7 +180,30 @@ UI thread                    scan_worker              action_worker
 - **新增弹层**：在 `DialogKind` 加枚举 → `MainView::BuildLayout`/`Paint*`/`HitTest` 三处补齐 → `Application` 决定何时设置。
 - **新增后台动作**：在 `Application` 里定义 payload，动作 Worker 内完成并 `PostPayload`，handler 先检查 generation。
 
-## 8. 已知边界
+## 8. 更新流程
+
+```text
+主程序启动 ──5s──> 自动更新开启且已到频率间隔？
+                        │ 否                      │ 是
+                        v                         v
+              updater --cleanup            updater --autocheck / --silent
+                        │                         │
+                        └─ 删除 .old 后退出       ├─ 检查 → 下载 → 解压
+                                                  ├─ 结束主程序（若在运行）
+                                                  ├─ 覆盖 UsbAssistant.exe
+                                                  ├─ 本体改名 .old，写入新升级器
+                                                  └─ 重新启动主程序（原先在运行时）
+```
+
+要点：
+
+- **主程序不再处理升级器文件**：不再有 `.new` 待生效文件与延时补替换；主程序每次启动只负责“无论如何运行一次升级器”，让升级器自己清理 `.old`。
+- **频率判断只在一处**：`core/update_schedule` 给出间隔与到期判断；主程序按 `UpdateFrequency` 每分钟判断一次（`软件启动时` 不轮询），升级器在每次检查后写回 `[Update] LastCheck`，所以重启不会重置计时。
+- **升级器不读设置项**：自动更新开关、更新频率、静默更新只由主程序解释，升级器只认 `--cleanup` / `--autocheck` / `--silent` 三个参数；它写回的只有 `[Update] LastCheck`。这么分是因为升级器是短命进程，运行期间的定时只能由常驻的主程序负责。
+- **升级器自我替换**：正在运行的 exe 不能删除但可以改名，因此先把 `UsbAssistantUpdater.exe` 改名成 `.old`，再把新版本写成正式文件名；复制失败时把 `.old` 改回来。
+- **静默更新**只改变升级器的启动方式：不创建 Direct2D/窗口，发现新版本后直接走同一套安装流程（结束主程序 → 替换 → 重启）。
+
+## 9. 已知边界
 
 - 真实 USB 硬件上的枚举/弹出需要在目标机器上验收；无设备环境下只能覆盖空状态与安全分支。
 - `NtQueryObject` 在极少数句柄类型上可能阻塞；已通过“先复制句柄 + `GetFileType` 过滤 + 15s 看门狗”降低影响，但无法保证所有驱动行为。

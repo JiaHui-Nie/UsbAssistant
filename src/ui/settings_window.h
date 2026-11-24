@@ -63,6 +63,15 @@ private:
     float BaseContentHeight() const;
     void UpdateScrollBounds();
     static bool IsSubRow(int row);
+    static int SubRowParent(int row);
+    static bool SubRowIsChoice(int row);
+    static const wchar_t* SubRowLabel(int row);
+    // 带展开箭头的父行：显示无盘符分区、自动更新。
+    static bool IsExpandable(int row);
+    bool IsExpanded(int row) const;
+    void ToggleExpanded(int row);
+    void PaintChoice(ID2D1RenderTarget* target, ID2D1SolidColorBrush* brush,
+                     int row, bool enabled);
     D2D1_RECT_F ToggleRect(int row) const;
     D2D1_RECT_F ChoiceRect(int row) const;
     D2D1_RECT_F ShortcutRect(int row) const;
@@ -99,7 +108,9 @@ private:
     bool clear_hover_ = false;
     bool capturing_hotkey_ = false;
     bool menu_open_ = false;
-    bool expanded_ = false;
+    // 两个可折叠分组的展开状态，分别对应“显示无盘符分区”和“自动检查更新”。
+    bool hidden_expanded_ = false;
+    bool update_expanded_ = false;
     int open_row_ = -1;
     bool tracking_leave_ = false;
     bool dragging_ = false;

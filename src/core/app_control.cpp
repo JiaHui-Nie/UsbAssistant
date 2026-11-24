@@ -104,30 +104,32 @@ bool LaunchApp(const std::wstring& exe_path, const std::wstring& arguments,
     return ok != FALSE;
 }
 
-void ApplyPendingUpdaterUpdate() {
+bool DeleteUpdaterLeftover() {
     const std::wstring directory = ExecutableDirectory();
-    if (directory.empty()) return;
+    if (directory.empty()) return true;
 
-    const std::wstring pending =
-        directory + L"\\" + kUpdaterPendingExeName;
-    if (GetFileAttributesW(pending.c_str()) == INVALID_FILE_ATTRIBUTES) return;
+    // 旧版本曾把新升级器落成 .new 交给主程序改名；这里顺手清掉残留。
+    const std::wstring legacy_pending =
+        directory + L"\\" + kUpdaterLegacyPendingExeName;
+    SetFileAttributesW(legacy_pending.c_str(), FILE_ATTRIBUTE_NORMAL);
+    DeleteFileW(legacy_pending.c_str());
 
-    const std::wstring target = directory + L"\\" + kUpdaterExeName;
-    if (!MoveFileExW(pending.c_str(), target.c_str(),
-                     MOVEFILE_REPLACE_EXISTING)) {
-        // 升级器正在运行等情况：保留 .new，下次启动再试。
-        USB_LOG_WARN(L"app", L"升级器待生效文件替换失败：%lu", GetLastError());
-        return;
+    const std::wstring leftover = directory + L"\\" + kUpdaterOldExeName;
+    if (GetFileAttributesW(leftover.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        return true;
     }
-    USB_LOG_INFO(L"app", L"升级器已替换为新版本");
-}
 
-bool HasPendingUpdaterUpdate() {
-    const std::wstring directory = ExecutableDirectory();
-    if (directory.empty()) return false;
-    const std::wstring pending =
-        directory + L"\\" + kUpdaterPendingExeName;
-    return GetFileAttributesW(pending.c_str()) != INVALID_FILE_ATTRIBUTES;
+    // 上一次自我替换时旧进程可能还没完全退出，文件短暂被占用。
+    for (int attempt = 0; attempt < 10; ++attempt) {
+        SetFileAttributesW(leftover.c_str(), FILE_ATTRIBUTE_NORMAL);
+        if (DeleteFileW(leftover.c_str())) {
+            USB_LOG_INFO(L"update", L"已删除旧版升级器备份");
+            return true;
+        }
+        Sleep(100);
+    }
+    USB_LOG_WARN(L"update", L"删除旧版升级器备份失败：%lu", GetLastError());
+    return false;
 }
 
 }  // namespace usb

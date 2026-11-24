@@ -15,8 +15,13 @@ struct Settings {
     int position_mode = 0;          // 0 = 固定角落，1 = 记住上次位置
     int corner = 3;                 // 0 左上 1 左下 2 右上 3 右下
     int refresh_seconds = 3;        // 0 = 关闭定时刷新
-    // 启动后延迟几秒静默检查一次更新；只在新版本或失败时反馈。
+    // 自动检查更新的总开关；具体频率由 update_frequency 决定。
     bool auto_check_updates = true;
+    // 更新频率：0 软件启动时、1 每小时、2 每天、3 每周、4 每月。
+    // 只在软件运行期间自行判断，不注册系统计划任务。
+    int update_frequency = 0;
+    // 静默更新：发现新版本时不弹窗，直接结束主程序并完成替换后重启。
+    bool silent_update = false;
     // 占用列表后台复检间隔（秒）。只写配置文件，不在设置界面展示。
     int occupants_refresh_seconds = 1;
     int capacity_base = 1024;       // 1000 = 厂商进制

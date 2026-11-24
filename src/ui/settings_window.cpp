@@ -67,6 +67,8 @@ enum Row {
     RowHiddenEsp = 100,
     RowHiddenMsr,
     RowHiddenOther,
+    RowUpdateFrequency = 120,
+    RowSilentUpdate,
     RowShortcutHint = 200,
 };
 
@@ -158,15 +160,26 @@ int CurrentModifiers() {
 }
 
 struct SubRowSpec {
+    int parent;
     int row;
     const wchar_t* label;
+    bool choice;  // true 表示这一行是下拉选项，false 表示开关
 };
 
 constexpr SubRowSpec kSubRows[] = {
-    {RowHiddenEsp, L"ESP 分区"},
-    {RowHiddenMsr, L"MSR 分区"},
-    {RowHiddenOther, L"其他无盘符分区"},
+    {RowHiddenPartitions, RowHiddenEsp, L"ESP 分区", false},
+    {RowHiddenPartitions, RowHiddenMsr, L"MSR 分区", false},
+    {RowHiddenPartitions, RowHiddenOther, L"其他无盘符分区", false},
+    {RowAutoCheckUpdates, RowUpdateFrequency, L"更新频率", true},
+    {RowAutoCheckUpdates, RowSilentUpdate, L"静默更新（不弹窗）", false},
 };
+
+const SubRowSpec* FindSubRow(int row) {
+    for (const auto& sub : kSubRows) {
+        if (sub.row == row) return &sub;
+    }
+    return nullptr;
+}
 
 struct RowSpec {
     const wchar_t* label;
@@ -175,7 +188,7 @@ struct RowSpec {
 
 constexpr RowSpec kRows[kRowCount] = {
     {L"开机自启动", true},
-    {L"启动时检查更新", true},
+    {L"自动检查更新", true},
     {L"窗口始终置顶", true},
     {L"快捷键", false},
     {L"窗口默认位置", false},
@@ -207,6 +220,9 @@ const Option kMainHeights[] = {
 };
 const Option kRefresh[] = {{L"关闭", 0},  {L"1 秒", 1},  {L"2 秒", 2},
                            {L"3 秒", 3},  {L"5 秒", 5},  {L"10 秒", 10}};
+const Option kUpdateFrequencies[] = {{L"软件启动时", 0}, {L"每小时", 1},
+                                     {L"每天", 2},      {L"每周", 3},
+                                     {L"每月", 4}};
 
 template <std::size_t N>
 const Option* FindOption(const Option (&options)[N], int value) {
@@ -248,6 +264,8 @@ bool RowToggleValue(const Settings& settings, int row) {
             return settings.show_msr_partitions;
         case RowHiddenOther:
             return settings.show_other_hidden_partitions;
+        case RowSilentUpdate:
+            return settings.silent_update;
         default:
             return false;
     }
@@ -269,6 +287,8 @@ int CurrentChoiceIndex(const Settings& settings, int row) {
             return NearestIndex(kMainHeights, settings.main_height_percent);
         case RowRefresh:
             return NearestIndex(kRefresh, settings.refresh_seconds);
+        case RowUpdateFrequency:
+            return NearestIndex(kUpdateFrequencies, settings.update_frequency);
         default:
             return 0;
     }
@@ -299,6 +319,9 @@ void ApplyChoice(Settings* settings, int row, int index) {
         case RowRefresh:
             settings->refresh_seconds = kRefresh[index].value;
             break;
+        case RowUpdateFrequency:
+            settings->update_frequency = kUpdateFrequencies[index].value;
+            break;
         default:
             break;
     }
@@ -318,6 +341,8 @@ int OptionCount(int row) {
             return static_cast<int>(std::size(kMainHeights));
         case RowRefresh:
             return static_cast<int>(std::size(kRefresh));
+        case RowUpdateFrequency:
+            return static_cast<int>(std::size(kUpdateFrequencies));
         default:
             return 0;
     }
@@ -337,6 +362,8 @@ const Option* OptionAt(int row, int index) {
             return &kMainHeights[index];
         case RowRefresh:
             return &kRefresh[index];
+        case RowUpdateFrequency:
+            return &kUpdateFrequencies[index];
         default:
             return nullptr;
     }
@@ -981,7 +1008,8 @@ void SettingsWindow::PaintRows(ID2D1RenderTarget* target,
         if (rect.bottom < kCardTop || rect.top > view_height_) continue;
         const bool enabled =
             !IsHintRow(row) &&
-            (!IsSubRow(row) || settings_.show_hidden_partitions);
+            (!IsSubRow(row) ||
+             RowToggleValue(settings_, SubRowParent(row)));
         PaintRow(target, brush, row, rect, row == hover_row_, enabled);
         if (!IsSubRow(row) && !IsHintRow(row) && i + 1 < order.size() &&
             !IsSubRow(order[i + 1]) && !IsHintRow(order[i + 1])) {
@@ -1011,17 +1039,17 @@ void SettingsWindow::PaintRow(ID2D1RenderTarget* target,
     }
 
     if (IsSubRow(row)) {
-        const wchar_t* label = L"";
-        for (const auto& sub : kSubRows) {
-            if (sub.row == row) {
-                label = sub.label;
-                break;
-            }
-        }
-        DrawText(target, brush, label, fonts_->dialog_row,
-                 Rect(rect.left + 12.0f, rect.top, rect.right - 68.0f,
-                      rect.bottom),
+        // 下拉子行的右侧要给选项按钮留出与主行一致的空间。
+        const float label_right =
+            rect.right - (SubRowIsChoice(row) ? 160.0f : 68.0f);
+        DrawText(target, brush, SubRowLabel(row), fonts_->dialog_row,
+                 Rect(rect.left + 12.0f, rect.top, label_right, rect.bottom),
                  enabled ? palette_.text_secondary : palette_.text_tertiary);
+
+        if (SubRowIsChoice(row)) {
+            PaintChoice(target, brush, row, enabled);
+            return;
+        }
 
         const bool on = RowToggleValue(settings_, row);
         if (enabled) {
@@ -1090,11 +1118,11 @@ void SettingsWindow::PaintRow(ID2D1RenderTarget* target,
                    RowToggleValue(settings_, row), palette_.accent,
                    WithAlpha(palette_.text_tertiary, 0.28f),
                    palette_.card);
-        if (row == RowHiddenPartitions) {
+        if (IsExpandable(row)) {
             const float x = rect.right - 16.0f - kToggleWidth - 14.0f;
             const float y = (rect.top + rect.bottom) * 0.5f;
             brush->SetColor(WithAlpha(palette_.text_tertiary, 0.85f));
-            if (expanded_) {
+            if (IsExpanded(row)) {
                 target->DrawLine({x - 3.5f, y - 1.5f}, {x, y + 2.0f}, brush,
                                  1.4f);
                 target->DrawLine({x, y + 2.0f}, {x + 3.5f, y - 1.5f}, brush,
@@ -1109,18 +1137,25 @@ void SettingsWindow::PaintRow(ID2D1RenderTarget* target,
         return;
     }
 
+    PaintChoice(target, brush, row, true);
+}
+
+void SettingsWindow::PaintChoice(ID2D1RenderTarget* target,
+                                 ID2D1SolidColorBrush* brush, int row,
+                                 bool enabled) {
     const D2D1_RECT_F pill = ChoiceRect(row);
-    const bool open = row == open_row_;
+    const bool open = enabled && row == open_row_;
     FillRound(target, brush, pill, 8.0f,
               open ? palette_.accent_soft : palette_.secondary_button);
     DrawText(target, brush, ChoiceText(settings_, row), fonts_->button, pill,
-             open ? palette_.accent : palette_.secondary_text);
+             enabled ? (open ? palette_.accent : palette_.secondary_text)
+                     : palette_.text_tertiary);
 
     // 右侧下拉箭头
     const float x = pill.right - 14.0f;
     const float y = (pill.top + pill.bottom) * 0.5f;
-    brush->SetColor(WithAlpha(
-        open ? palette_.accent : palette_.secondary_text, 0.75f));
+    brush->SetColor(WithAlpha(open ? palette_.accent : palette_.secondary_text,
+                              enabled ? 0.75f : 0.35f));
     target->DrawLine({x - 3.0f, y - 1.5f}, {x, y + 1.5f}, brush, 1.2f);
     target->DrawLine({x, y + 1.5f}, {x + 3.0f, y - 1.5f}, brush, 1.2f);
 }
@@ -1150,14 +1185,67 @@ bool SettingsWindow::IsSubRow(int row) {
     return row >= RowHiddenEsp && row < RowShortcutHint;
 }
 
+int SettingsWindow::SubRowParent(int row) {
+    const SubRowSpec* sub = FindSubRow(row);
+    return sub ? sub->parent : -1;
+}
+
+bool SettingsWindow::SubRowIsChoice(int row) {
+    const SubRowSpec* sub = FindSubRow(row);
+    return sub ? sub->choice : false;
+}
+
+const wchar_t* SettingsWindow::SubRowLabel(int row) {
+    const SubRowSpec* sub = FindSubRow(row);
+    return sub ? sub->label : L"";
+}
+
+// 带展开箭头的父行：显示无盘符分区、自动检查更新，默认都折叠。
+bool SettingsWindow::IsExpandable(int row) {
+    return row == RowHiddenPartitions || row == RowAutoCheckUpdates;
+}
+
+bool SettingsWindow::IsExpanded(int row) const {
+    if (row == RowHiddenPartitions) return hidden_expanded_;
+    if (row == RowAutoCheckUpdates) return update_expanded_;
+    return false;
+}
+
+void SettingsWindow::ToggleExpanded(int row) {
+    if (row == RowHiddenPartitions) {
+        hidden_expanded_ = !hidden_expanded_;
+    } else if (row == RowAutoCheckUpdates) {
+        update_expanded_ = !update_expanded_;
+    } else {
+        return;
+    }
+    UpdateScrollBounds();
+
+    // 展开后只把新出现的子行滚进可视区，避免整页跳到最底部把父行顶出视野。
+    int last_sub = -1;
+    for (const auto& sub : kSubRows) {
+        if (sub.parent == row) last_sub = sub.row;
+    }
+    if (IsExpanded(row) && last_sub >= 0) {
+        const float card_bottom = view_height_ - kFooterHeight + 4.0f;
+        const float overflow = RowRect(last_sub).bottom - card_bottom;
+        if (overflow > 0.0f) {
+            SetScroll(scroll_ + overflow);
+            return;
+        }
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
 std::vector<int> SettingsWindow::RowOrder() const {
     std::vector<int> order;
     order.reserve(kRowCount + std::size(kSubRows) + 1);
     for (int row = 0; row < kRowCount; ++row) {
         order.push_back(row);
         if (row == RowShortcut) order.push_back(RowShortcutHint);
-        if (row == RowHiddenPartitions && expanded_) {
-            for (const auto& sub : kSubRows) order.push_back(sub.row);
+        if (!IsExpanded(row)) continue;
+        for (const auto& sub : kSubRows) {
+            if (sub.parent == row) order.push_back(sub.row);
         }
     }
     return order;
@@ -1260,6 +1348,9 @@ void SettingsWindow::ToggleRow(int row) {
         if (!settings_.show_hidden_partitions) return;
         settings_.show_other_hidden_partitions =
             !settings_.show_other_hidden_partitions;
+    } else if (row == RowSilentUpdate) {
+        if (!settings_.auto_check_updates) return;
+        settings_.silent_update = !settings_.silent_update;
     } else {
         return;
     }
@@ -1434,20 +1525,26 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
                 return 0;
             }
             if (IsSubRow(row)) {
-                if (settings_.show_hidden_partitions &&
-                    Contains(ControlHitRect(ToggleRect(row)), x, y)) {
-                    ToggleRow(row);
+                const bool parent_on =
+                    RowToggleValue(settings_, SubRowParent(row));
+                if (parent_on) {
+                    if (SubRowIsChoice(row)) {
+                        if (Contains(ControlHitRect(ChoiceRect(row)), x, y)) {
+                            ChooseRow(row);
+                        }
+                    } else if (Contains(ControlHitRect(ToggleRect(row)), x,
+                                        y)) {
+                        ToggleRow(row);
+                    }
                 }
                 return 0;
             }
             if (kRows[row].toggle) {
                 if (Contains(ControlHitRect(ToggleRect(row)), x, y)) {
                     ToggleRow(row);
-                } else if (row == RowHiddenPartitions &&
+                } else if (IsExpandable(row) &&
                            Contains(ChevronHitRect(RowRect(row)), x, y)) {
-                    expanded_ = !expanded_;
-                    UpdateScrollBounds();
-                    if (expanded_) scroll_ = scroll_max_;
+                    ToggleExpanded(row);
                     InvalidateRect(hwnd, nullptr, FALSE);
                 }
                 return 0;
@@ -1501,13 +1598,18 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
                     interactive =
                         Contains(ControlHitRect(ShortcutRect(row)), x, y);
                 } else if (IsSubRow(row)) {
+                    const bool parent_on =
+                        RowToggleValue(settings_, SubRowParent(row));
                     interactive =
-                        settings_.show_hidden_partitions &&
-                        Contains(ControlHitRect(ToggleRect(row)), x, y);
+                        parent_on &&
+                        (SubRowIsChoice(row)
+                             ? Contains(ControlHitRect(ChoiceRect(row)), x, y)
+                             : Contains(ControlHitRect(ToggleRect(row)), x,
+                                        y));
                 } else if (kRows[row].toggle) {
                     interactive =
                         Contains(ControlHitRect(ToggleRect(row)), x, y) ||
-                        (row == RowHiddenPartitions &&
+                        (IsExpandable(row) &&
                          Contains(ChevronHitRect(RowRect(row)), x, y));
                 } else {
                     interactive = Contains(ControlHitRect(ChoiceRect(row)), x,

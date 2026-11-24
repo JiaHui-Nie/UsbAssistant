@@ -67,8 +67,14 @@ private:
     std::wstring ChangeHotkey(int mods, int vk);
     void SyncHotkey(bool startup);
     void ShowAbout();
-    // 启动独立升级器；autocheck 表示只在新版本出现时才弹出窗口。
-    void LaunchUpdater(bool autocheck);
+    // 升级器启动方式：Manual 始终显示窗口，AutoCheck 只在新版本时显示，
+    // AutoSilent 完全不显示窗口，Cleanup 只清理上一次留下的旧版升级器。
+    enum class UpdateLaunch { Manual, AutoCheck, AutoSilent, Cleanup };
+    void LaunchUpdater(UpdateLaunch launch);
+    // 按“自动更新开关 + 频率 + 上次检查时间”判断本次要不要检查。
+    // startup=true 时即使不检查也要运行一次升级器：它负责删掉上一次
+    // 自我替换留下的 .old 文件。
+    void RunScheduledUpdateCheck(bool startup);
     void ShowUpdaterLaunchError();
 
     // 设备
@@ -217,6 +223,8 @@ private:
     bool animating_ = false;
     bool tracking_leave_ = false;
     bool empty_hide_armed_ = false;
+    // 启动后的第一次自动更新判断是否已经执行过（设置变更时会重置）。
+    bool update_startup_done_ = false;
     // 托盘通知可能重复投递（WM_RBUTTONUP 与 WM_CONTEXTMENU），
     // 菜单显示期间忽略后续通知，避免叠出多个菜单窗口。
     bool tray_menu_open_ = false;

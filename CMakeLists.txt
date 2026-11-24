@@ -10,7 +10,7 @@ set(USBASSISTANT_VERSION_OVERRIDE "" CACHE STRING
     "手动指定正式版本号（如 1.2.3）；留空则按 git tag 推导")
 
 # 无版本来源时 kAppVersion 使用的数字基线，随每次发布更新。
-set(USBASSISTANT_FALLBACK_VERSION "1.3.0")
+set(USBASSISTANT_FALLBACK_VERSION "1.4.0")
 set(USBASSISTANT_VERSION "${USBASSISTANT_FALLBACK_VERSION}")
 set(USBASSISTANT_VERSION_DISPLAY "dev")
 set(USBASSISTANT_DISPLAY_VERSION "dev")
@@ -104,6 +104,7 @@ add_library(usbassistant_core STATIC
     src/core/occupants.cpp
     src/core/elevation.cpp
     src/core/update.cpp
+    src/core/update_schedule.cpp
     src/core/http.cpp
     src/core/zip.cpp
     src/core/app_control.cpp

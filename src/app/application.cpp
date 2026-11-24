@@ -23,6 +23,7 @@
 #include "core/occupants.h"
 #include "core/storage.h"
 #include "core/text.h"
+#include "core/update_schedule.h"
 #include "core/version.h"
 #include "ui/draw.h"
 
@@ -52,7 +53,11 @@ constexpr UINT_PTR kTimerAction = 7;
 constexpr UINT_PTR kTimerTrayHealth = 8;
 constexpr UINT_PTR kTimerOccupantsRefresh = 9;
 constexpr UINT_PTR kTimerUpdateAuto = 10;
-constexpr UINT_PTR kTimerPendingUpdater = 11;
+
+// 启动后延迟判断一次自动更新，避开启动期的扫描与绘制。
+constexpr UINT kUpdateStartupDelayMs = 5000;
+// 运行期间按分钟检查一次“距上次检查是否已到频率间隔”。
+constexpr UINT kUpdatePollIntervalMs = 60 * 1000;
 
 constexpr int kActionTimeoutEjectMs = 30000;
 constexpr int kActionTimeoutScanMs = 15000;
@@ -422,14 +427,9 @@ bool Application::Initialize(HINSTANCE instance, bool start_hidden) {
     SetTimer(hwnd_, kTimerTray, 1500, nullptr);
 
     RequestScan(0);
-    // 启动后延迟几秒再静默检查更新，避开启动期的扫描与绘制。
-    if (settings_.auto_check_updates) {
-        SetTimer(hwnd_, kTimerUpdateAuto, 5000, nullptr);
-    }
-    // 升级器当时可能仍在退出，导致启动早期的替换失败：稍后再补一次。
-    if (HasPendingUpdaterUpdate()) {
-        SetTimer(hwnd_, kTimerPendingUpdater, 1500, nullptr);
-    }
+    // 启动后无论如何都运行一次升级器：到检查时间就检查更新，否则只让它
+    // 删掉上一次自我替换留下的 .old。延迟几秒避开启动期的扫描与绘制。
+    SetTimer(hwnd_, kTimerUpdateAuto, kUpdateStartupDelayMs, nullptr);
     SyncHotkey(true);
     return true;
 }
@@ -651,6 +651,9 @@ void Application::ApplySettings(const Settings& settings) {
     const bool position_changed =
         settings_.position_mode != settings.position_mode ||
         settings_.corner != settings.corner;
+    const bool update_changed =
+        settings_.auto_check_updates != settings.auto_check_updates ||
+        settings_.update_frequency != settings.update_frequency;
 
     settings_ = settings;
     settings_.Normalize();
@@ -659,11 +662,14 @@ void Application::ApplySettings(const Settings& settings) {
     USB_LOG_INFO(
         L"app",
         L"设置变更：filter=%d height=%d position=%d top_most=%d "
-        L"pos_mode=%d corner=%d close_action=%d refresh=%d edge=%d",
+        L"pos_mode=%d corner=%d close_action=%d refresh=%d edge=%d "
+        L"auto_update=%d update_freq=%d silent_update=%d",
         filter_changed ? 1 : 0, height_changed ? 1 : 0,
         position_changed ? 1 : 0, settings_.top_most ? 1 : 0,
         settings_.position_mode, settings_.corner, settings_.close_action,
-        settings_.refresh_seconds, settings_.edge_collapse ? 1 : 0);
+        settings_.refresh_seconds, settings_.edge_collapse ? 1 : 0,
+        settings_.auto_check_updates ? 1 : 0, settings_.update_frequency,
+        settings_.silent_update ? 1 : 0);
 
     if (filter_changed) {
         // 分区被隐藏后不再保留本进程分配的盘符，避免留下说不清的挂载。
@@ -684,7 +690,14 @@ void Application::ApplySettings(const Settings& settings) {
 
     ApplyTopMost();
     ApplyRefreshTimer();
-    if (!settings_.auto_check_updates) KillTimer(hwnd_, kTimerUpdateAuto);
+    if (update_changed) {
+        // 重新排期：关闭自动更新时停掉轮询；重新打开后 5 秒再判断一次。
+        KillTimer(hwnd_, kTimerUpdateAuto);
+        update_startup_done_ = false;
+        if (settings_.auto_check_updates) {
+            SetTimer(hwnd_, kTimerUpdateAuto, kUpdateStartupDelayMs, nullptr);
+        }
+    }
 
     if (position_changed) ApplyWindowPosition();
     store_.Save(settings_);
@@ -770,18 +783,59 @@ void Application::SyncHotkey(bool startup) {
 
 void Application::ShowAbout() {
     about_window_.Open(instance_, hwnd_, d2d_, dwrite_, &fonts_, palette_,
-                       kAboutVersion, [this]() { LaunchUpdater(false); });
+                       kAboutVersion,
+                       [this]() { LaunchUpdater(UpdateLaunch::Manual); });
 }
 
-void Application::LaunchUpdater(bool autocheck) {
+void Application::LaunchUpdater(UpdateLaunch launch) {
     const std::wstring directory = ExecutableDirectory();
     const std::wstring updater = directory + L"\\" + kUpdaterExeName;
-    if (LaunchApp(updater, autocheck ? L"--autocheck" : L"", directory)) {
+
+    std::wstring arguments;
+    switch (launch) {
+        case UpdateLaunch::Cleanup:
+            arguments = L"--cleanup";
+            break;
+        case UpdateLaunch::AutoSilent:
+            arguments = L"--silent";
+            break;
+        case UpdateLaunch::AutoCheck:
+            arguments = L"--autocheck";
+            break;
+        case UpdateLaunch::Manual:
+            break;
+    }
+
+    if (LaunchApp(updater, arguments, directory)) return;
+    // 自动检查失败不打扰用户，只在手动点击“检查更新”时明确报错。
+    USB_LOG_ERROR(L"app", L"无法启动升级器：%s", updater.c_str());
+    if (launch == UpdateLaunch::Manual) ShowUpdaterLaunchError();
+}
+
+void Application::RunScheduledUpdateCheck(bool startup) {
+    if (!settings_.auto_check_updates) {
+        // 自动更新关闭时仍然运行一次升级器，只为清理上一次留下的 .old。
+        if (startup) LaunchUpdater(UpdateLaunch::Cleanup);
         return;
     }
-    // 启动时的静默检查失败不打扰用户，只在手动点击时明确报错。
-    USB_LOG_ERROR(L"app", L"无法启动升级器：%s", updater.c_str());
-    if (!autocheck) ShowUpdaterLaunchError();
+
+    const std::int64_t now = NowSeconds();
+    const std::int64_t last = ReadLastUpdateCheck();
+    if (!UpdateCheckDue(settings_.update_frequency, last, now)) {
+        USB_LOG_INFO(L"update",
+                     L"未到检查时间：frequency=%d last=%lld now=%lld",
+                     settings_.update_frequency,
+                     static_cast<long long>(last),
+                     static_cast<long long>(now));
+        if (startup) LaunchUpdater(UpdateLaunch::Cleanup);
+        return;
+    }
+
+    USB_LOG_INFO(L"update", L"启动升级器：frequency=%d silent=%d",
+                 settings_.update_frequency,
+                 settings_.silent_update ? 1 : 0);
+    LaunchUpdater(settings_.silent_update ? UpdateLaunch::AutoSilent
+                                          : UpdateLaunch::AutoCheck);
 }
 
 void Application::ShowUpdaterLaunchError() {
@@ -2050,14 +2104,18 @@ void Application::OnTimer(UINT_PTR timer) {
         case kTimerOccupantsRefresh:
             CheckOccupantsRefresh();
             break;
-        case kTimerUpdateAuto:
+        case kTimerUpdateAuto: {
             KillTimer(hwnd_, kTimerUpdateAuto);
-            if (settings_.auto_check_updates) LaunchUpdater(true);
+            RunScheduledUpdateCheck(!update_startup_done_);
+            update_startup_done_ = true;
+            // “软件启动时”只管启动一次；其余频率在运行期间每分钟判断是否到期。
+            if (settings_.auto_check_updates &&
+                settings_.update_frequency != kUpdateOnStartup) {
+                SetTimer(hwnd_, kTimerUpdateAuto, kUpdatePollIntervalMs,
+                         nullptr);
+            }
             break;
-        case kTimerPendingUpdater:
-            KillTimer(hwnd_, kTimerPendingUpdater);
-            ApplyPendingUpdaterUpdate();
-            break;
+        }
         case kTimerEmptyHide:
             KillTimer(hwnd_, kTimerEmptyHide);
             empty_hide_armed_ = false;
@@ -2571,7 +2629,6 @@ LRESULT Application::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             KillTimer(hwnd_, kTimerToast);
             KillTimer(hwnd_, kTimerAction);
             KillTimer(hwnd_, kTimerUpdateAuto);
-            KillTimer(hwnd_, kTimerPendingUpdater);
             SaveSettings();
             UnmountManagedVolumes(PartitionKind::Normal, true);
             RemoveTrayIcon();

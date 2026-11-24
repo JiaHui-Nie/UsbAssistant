@@ -10,8 +10,12 @@ namespace usb {
 inline constexpr wchar_t kMainWindowClass[] = L"UsbAssistantMain";
 inline constexpr wchar_t kMainExeName[] = L"UsbAssistant.exe";
 inline constexpr wchar_t kUpdaterExeName[] = L"UsbAssistantUpdater.exe";
-// 升级器解压出的待生效文件；主程序启动早期把它换成正式文件名。
-inline constexpr wchar_t kUpdaterPendingExeName[] =
+// 升级器自我替换时，正在运行的本体会先改名为 .old；新版本直接写成正式
+// 文件名，由下一次升级器启动时删除 .old。
+inline constexpr wchar_t kUpdaterOldExeName[] =
+    L"UsbAssistantUpdater.old.exe";
+// 旧版本使用的待生效文件名，只在清理历史残留时出现。
+inline constexpr wchar_t kUpdaterLegacyPendingExeName[] =
     L"UsbAssistantUpdater.new.exe";
 
 // 升级器通知主程序退出用的注册消息名，两边必须一致。
@@ -45,11 +49,8 @@ StopAppResult RequestAppExit(const RunningApp& app, int grace_ms,
 bool LaunchApp(const std::wstring& exe_path, const std::wstring& arguments,
                const std::wstring& working_dir);
 
-// 主程序启动早期调用：把升级器留下的 UsbAssistantUpdater.new.exe 替换为
-// UsbAssistantUpdater.exe。成功才删除 .new；失败保留文件，下次启动再试。
-void ApplyPendingUpdaterUpdate();
-
-// 是否还有待生效的升级器文件（用于启动后再补一次替换）。
-bool HasPendingUpdaterUpdate();
+// 升级器启动时调用：删除上一次自我替换留下的 .old 文件。
+// 旧进程可能还在退出，会短暂重试；仍未成功就留给下一次启动。
+bool DeleteUpdaterLeftover();
 
 }  // namespace usb

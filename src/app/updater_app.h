@@ -27,12 +27,18 @@ public:
         Failed,
     };
 
+    // 启动方式：
+    //   Visible   手动检查，窗口始终显示；
+    //   AutoCheck 自动检查，只有发现新版本才显示窗口；
+    //   Silent    静默更新，完全不显示窗口，发现新版本直接完成替换。
+    enum class UpdateMode { Visible, AutoCheck, Silent };
+
     UpdaterApp();
     ~UpdaterApp();
     UpdaterApp(const UpdaterApp&) = delete;
     UpdaterApp& operator=(const UpdaterApp&) = delete;
 
-    InitResult Initialize(HINSTANCE instance, bool autocheck);
+    InitResult Initialize(HINSTANCE instance, UpdateMode mode);
     int Run();
 
 private:
@@ -56,6 +62,14 @@ private:
 
     void PostInstallStage(int kind, std::wstring text);
 
+    bool IsSilent() const { return mode_ == UpdateMode::Silent; }
+    // 静默模式没有窗口：这些封装在无界面时直接忽略。
+    void ShowStage(ui::UpdaterStage stage, std::wstring text);
+    void ShowProgress(float fraction);
+    // 结束本次启动：有窗口时关窗（关窗即退出消息循环），无窗口时直接退出。
+    void Finish();
+
+    UpdateMode mode_ = UpdateMode::Visible;
     bool autocheck_ = false;
     bool com_initialized_ = false;
     // 单实例互斥体：句柄存活即代表本进程是唯一升级器实例。
