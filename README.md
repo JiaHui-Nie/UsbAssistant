@@ -5,7 +5,7 @@
 <h1 style="line-height:1;">🚀 U 盘助手 (USB assistant)</h1>
 
 ![平台](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078D6?logo=windows)
-![语言](https://img.shields.io/badge/language-C%2B%2B17-00599C?logo=cplusplus)
+![语言](https://img.shields.io/badge/language-C%2B%2B20-00599C?logo=cplusplus)
 ![许可证](https://img.shields.io/badge/license-MIT-green)
 
 </div>
@@ -28,9 +28,10 @@
 - [x] **占用检测与解除**：枚举系统句柄定位占用进程，可一键结束后再弹出；`explorer.exe` 只关闭相关窗口、绝不结束，系统关键进程一律跳过。
 - [x] **管理员模式**：需要提权的操作统一弹出带 UAC 盾牌的自绘确认框，确认后用 `runas` 启动同一个 exe 的 `--helper` 执行弹出 / 解除占用 / 挂载 / 取消挂载并回传结果；主程序无需重启，已具管理员权限时直接执行。
 - [x] **托盘常驻**：左键显示窗口，右键自绘菜单（显示 / 设置 / 退出）；启动后延迟补注册一次、之后每 15s 检查图标是否仍在，资源管理器重启后自动恢复。Windows 11 可能把新图标放进任务栏溢出区，这是系统行为，可在「设置 → 个性化 → 任务栏 → 其他系统托盘图标」中固定。
-- [x] **边缘悬浮图标**：窗口拖到屏幕工作区边缘后收起为 42px 圆角悬浮图标，点击从对应方向滑入恢复；任务栏所在边不参与判定。
-- [x] **设置**：开机自启动、始终置顶、默认位置、容量进制、关闭按钮功能、无设备自动隐藏、靠边收起、主界面最大高度、刷新间隔、显示无盘符分区（可展开分别控制 ESP / MSR / 其他）。
-- [x] **外观**：Direct2D 圆角卡片、淡入淡出、滚动动画、明暗配色、高 DPI 自适应；窗口/托盘菜单/设置窗口都按所在显示器的工作区定位，多显示器下不会跳回主屏。配置保存在程序目录 `config.ini`，不可写时退回 `%APPDATA%\UsbAssistant`。
+- [x] **边缘悬浮图标**：窗口拖到屏幕工作区边缘后收起为 42px 圆角悬浮条，图标由矢量绘制（沿用软件图标的三角形 + 底座造型，浅色主题纯黑、深色主题纯白），点击从对应方向滑入恢复；任务栏所在边不参与判定。
+- [x] **设置**：开机自启动、启动时检查更新、始终置顶、快捷键、默认位置、容量进制、关闭按钮功能、无设备自动隐藏、靠边收起、主界面最大高度、刷新间隔、显示无盘符分区（可展开分别控制 ESP / MSR / 其他）。
+- [x] **外观**：Direct2D 圆角卡片、淡入淡出、滚动动画、明暗配色、高 DPI 自适应；边缘悬浮条使用分层窗口逐像素透明 + GDI+ 抗锯齿矢量绘制，圆角外完全透明；窗口/托盘菜单/设置窗口都按所在显示器的工作区定位，多显示器下不会跳回主屏。配置保存在程序目录 `config.ini`，不可写时退回 `%APPDATA%\UsbAssistant`。
+- [x] **检查更新**：启动 5 秒后自动检查（默认开启，可在设置中关闭），也可在「关于」中手动检查；检查、下载与替换由独立的 `UsbAssistantUpdater.exe` 完成，按 Release/Debug 与 x64/x86 匹配对应压缩包，替换后自动重新启动主程序。
 - [x] **单实例**：再次启动会激活已有窗口，不会重复驻留。
 
 ## 目录结构
@@ -54,11 +55,18 @@ UsbAssistant/
     │   ├── devices.h/.cpp   # USB 设备与分区枚举
     │   ├── eject.h/.cpp     # 安全弹出三级流程
     │   ├── occupants.h/.cpp # 句柄扫描、结束占用、关闭资源管理器窗口
-    │   └── elevation.h/.cpp # 提权助手协议
+    │   ├── elevation.h/.cpp # 提权助手协议
+    │   ├── app_control.*    # 单实例查找、优雅退出与重启
+    │   ├── update.h/.cpp    # Release 版本与资产匹配
+    │   ├── http.h/.cpp      # WinHTTP 下载
+    │   ├── zip.h/.cpp       # 更新包解压
+    │   ├── log.h/.cpp       # 诊断日志
+    │   └── version.h        # 版本号与展示标识
     ├── app/
     │   ├── application.h/.cpp # 业务编排：窗口/托盘/设置/对话框/任务
     │   ├── post_target.h       # 后台结果的安全回传目标
-    │   └── worker.h/.cpp      # 串行后台任务队列
+    │   ├── worker.h/.cpp      # 串行后台任务队列
+    │   └── updater_app.h/.cpp  # 独立升级器：检查、下载、替换、重启
     └── ui/
         ├── theme.h/.cpp         # 明暗配色
         ├── canvas.h/.cpp        # 分层窗口离屏画布
@@ -66,8 +74,12 @@ UsbAssistant/
         ├── draw.h/.cpp          # 图形、图标、开关、复选框
         ├── main_view.h/.cpp     # 主界面 layout / paint / hit-test / 鼠标
         ├── settings_window.*    # 设置窗口
+        ├── about_window.*       # 关于窗口（版本与检查更新入口）
+        ├── updater_window.*     # 升级器进度窗口
+        ├── message_dialog.*     # 自绘提示 / 确认框
         ├── tray_menu.*          # 自绘托盘菜单
-        └── edge_bar.*           # 边缘悬浮条
+        ├── edge_bar.*           # 边缘悬浮条（分层窗口 + GDI+ 矢量图）
+        └── dpi.h                # DPI 辅助
 ```
 
 ## 构建
@@ -109,6 +121,7 @@ ctest --test-dir build --output-on-failure
 - `--autostart`：开机自启标记，启动后只驻留托盘、不显示主窗口（由设置中的「开机自启动」写入启动文件夹快捷方式）。
 - 主窗口可拖动；开启「靠边收起」后拖到屏幕边缘会变成悬浮条。
 - 托盘左键显示窗口，右键打开菜单。
+- 设置中可录制「显示/隐藏主面板」的全局快捷键（默认未设置）；有悬浮条时按快捷键会从悬浮条直接恢复。
 - 「关闭」按钮默认**隐藏到托盘**，保证托盘图标常驻；也可在设置中改为「退出程序」，并可关闭退出确认。
 
 ## 配置
@@ -126,7 +139,12 @@ ctest --test-dir build --output-on-failure
 | `SkipCloseConfirm` | `0` | `1` 关闭时不再确认 |
 | `EmptyHideSec` | `0` | 无设备自动隐藏秒数，`0` 不隐藏 |
 | `EdgeCollapse` | `0` | `1` 允许拖到屏幕边缘收起 |
+| `AutoCheckUpdates` | `1` | `1` 启动 5 秒后自动检查更新 |
+| `HotkeyMods` / `HotkeyVk` | `0` / `0` | 全局快捷键的修饰键与虚拟键码，`0` 表示未设置 |
 | `ShowHiddenPartitions` | `0` | `1` 显示无盘符分区（ESP / MSR / 未挂载） |
+| `ShowEspPartitions` | `1` | 显示 ESP 分区（在显示无盘符分区时生效） |
+| `ShowMsrPartitions` | `1` | 显示 MSR 分区（在显示无盘符分区时生效） |
+| `ShowOtherHiddenPartitions` | `1` | 显示其他无盘符分区（在显示无盘符分区时生效） |
 | `MainHeight` | `90` | 主界面最大高度（可用高度百分比，20–100） |
 | `HasLastPos` / `LastX` / `LastY` | `0` / `0` / `0` | 上次窗口位置（`PosMode=1` 时使用） |
 
@@ -152,7 +170,7 @@ ctest --test-dir build --output-on-failure
 
 ## 测试与验证
 
-- 开启 `USBASSISTANT_BUILD_TESTS` 后，`ctest` 覆盖：字符串清洗、容量格式化、配置读写与范围归一化、提权参数编解码、危险设备号的安全返回、无盘符目标处理。
+- 开启 `USBASSISTANT_BUILD_TESTS` 后，`ctest` 覆盖：字符串清洗、容量格式化、配置读写与范围归一化、日志行格式、版本比较与 Release 资产匹配、更新包解压、提权参数编解码、危险设备号的安全返回、无盘符目标处理、占用进程存活判定。
 - 已人工验证：空状态、明暗主题、多设备滚动、设置窗口、托盘菜单、关闭确认、边缘悬浮条收起/恢复、单实例、托盘退出、配置持久化。
 - 设备枚举与真实弹出依赖实际 USB 硬件；本机无 USB 存储设备时只验证了空状态与逻辑分支。建议插入 U 盘/移动硬盘后重点验证：多分区设备、被占用设备、管理员模式弹出、读卡器介质弹出。
 
