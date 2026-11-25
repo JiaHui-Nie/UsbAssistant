@@ -341,6 +341,8 @@ void TestVersionAndUpdate() {
     CHECK(CompareVersions(L"2.0", L"2.0.0") == 0);
     CHECK(CompareVersions(L"1.2.3", L"1.2.3-beta") == 0);
     CHECK(CompareVersions(L"abc", L"1.2.1") == 0);  // 无法比较时按相等处理
+    // 版本号只来自命令行：没有 override 时构建就是 dev，永远不提示更新。
+    CHECK(CompareVersions(L"dev", L"9.9.9") == 0);
 
     const std::string json =
         R"({"tag_name":"v1.4.0","html_url":)"
@@ -364,11 +366,19 @@ void TestVersionAndUpdate() {
     CHECK(!ParseLatestRelease(R"({"tag_name":"v1.2.1"})", &tag, &url, &error));
 
     CHECK(!std::wstring(kAppVersion).empty());
-    // kAppVersion 始终是数字版本号，供版本比较使用。
+    // 版本号只来自 -DUSBASSISTANT_VERSION_OVERRIDE：没有传入时就是 dev，
+    // 传了则必须是纯数字（CI 的 tag 构建）。
     const std::wstring app_version = kAppVersion;
     CHECK(!app_version.empty());
-    CHECK(app_version.front() >= L'0' && app_version.front() <= L'9');
-    // 展示标识只由是否有版本来源决定：数字版本号或 dev，与构建类型无关。
+    if (app_version == L"dev") {
+        CHECK(IsDevBuild());
+        CHECK(CompareVersions(app_version, L"9.9.9") == 0);
+    } else {
+        CHECK(!IsDevBuild());
+        CHECK(app_version.front() >= L'0' && app_version.front() <= L'9');
+        CHECK(app_version.find(L'v') == std::wstring::npos);
+    }
+    // 展示标识：正式构建是数字版本号，否则是 dev，与 Debug / Release 无关。
     const std::wstring about_version = kAboutVersion;
     CHECK(!about_version.empty());
     if (about_version != L"dev") {

@@ -1,14 +1,15 @@
-// 构建时注入的版本号与项目地址。
-// 版本号来源由 CMake 决定（-DUSBASSISTANT_VERSION_OVERRIDE 或 tag 正好指向
-// HEAD），源码里不重复维护版本字符串。
+// 版本号与项目地址。
+// 版本号只由命令行注入（-DUSBASSISTANT_VERSION_OVERRIDE=<x.y.z>）；没有传入
+// 时是 dev。源码里不保存任何版本号。
 #pragma once
 
+#include <string>
+
 #ifndef USBASSISTANT_VERSION
-#define USBASSISTANT_VERSION L"0.0.0"
+#define USBASSISTANT_VERSION L"dev"
 #endif
 
-// 对外展示的版本标识：有版本来源时是数字版本号，否则是 dev。
-// 未由 CMake 注入时退回数字版本，避免出现无法比较的值。
+// 对外展示的版本标识：正式构建是数字版本号，否则是 dev。
 #ifndef USBASSISTANT_DISPLAY_VERSION
 #define USBASSISTANT_DISPLAY_VERSION USBASSISTANT_VERSION
 #endif
@@ -19,12 +20,15 @@
 
 namespace usb {
 
-// 用于版本比较与更新判定的数字版本号，如 "1.2.3"。
-// 即使对外展示 dev，这里也始终是数字。
+// 用于更新判定的版本号：正式构建是 "x.y.z" 这样的数字，开发构建是 "dev"。
+// dev 没有数字段，版本比较按“相等”处理，所以开发构建不会提示更新。
 inline constexpr const wchar_t* kAppVersion = USBASSISTANT_VERSION;
 
+// 开发构建（没有数字版本号）不参与更新检查。
+inline bool IsDevBuild() { return std::wstring(kAppVersion) == L"dev"; }
+
 // 关于界面与 User-Agent 等对外展示的版本标识：数字版本号或 dev。
-// 只由是否有版本来源决定，与 Debug / Release 构建类型无关。
+// 与 Debug / Release 构建类型无关。
 inline constexpr const wchar_t* kAboutVersion = USBASSISTANT_DISPLAY_VERSION;
 
 // 发布包维度：配置（debug / release）与架构（x64 / x86）。

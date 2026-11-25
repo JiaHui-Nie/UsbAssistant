@@ -109,6 +109,12 @@ cmake --build build --config Release
 ctest --test-dir build --output-on-failure
 ```
 
+版本号：没有任何构建脚本或源码里保存版本号。只有发布构建通过
+`-DUSBASSISTANT_VERSION_OVERRIDE=<x.y.z>` 显式传入（CI 在 tag 构建里自动传入
+tag 对应的版本）；没有传入时程序与构建日志里都是 `dev`，且 `dev` 不参与更新检查。
+PowerShell 下要把整个参数加引号，否则 `x.y.z` 会被当成多个参数拆开：
+`cmake -S . -B build "-DUSBASSISTANT_VERSION_OVERRIDE=x.y.z"`。
+
 产物（仓库根目录只保留一个 `build`；x86 使用 `build/x86` 子目录）：
 
 - MinGW（单配置）：`build/UsbAssistant.exe`、`build/UsbAssistantUpdater.exe`
