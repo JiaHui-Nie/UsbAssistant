@@ -212,8 +212,10 @@ const Option kPositions[] = {
 };
 const Option kCapacities[] = {{L"1024 进制", 1024}, {L"1000 进制", 1000}};
 const Option kCloseActions[] = {{L"退出程序", 0}, {L"隐藏窗口", 1}};
-const Option kEmptyHide[] = {{L"不隐藏", 0},  {L"3 秒", 3},  {L"10 秒", 10},
-                             {L"20 秒", 20},    {L"30 秒", 30}, {L"60 秒", 60}};
+const Option kEmptyHide[] = {{L"不隐藏", 0},   {L"立即隐藏", -1}, {L"1 秒", 1},
+                             {L"3 秒", 3},    {L"10 秒", 10},
+                             {L"20 秒", 20},  {L"30 秒", 30},
+                             {L"60 秒", 60}};
 const Option kMainHeights[] = {
     {L"40 %", 40}, {L"50 %", 50}, {L"60 %", 60}, {L"70 %", 70},
     {L"80 %", 80}, {L"90 %", 90}, {L"100 %", 100},
@@ -762,6 +764,12 @@ bool SettingsWindow::Open(HINSTANCE instance, HWND owner, ID2D1Factory* d2d,
         close_hover_ = false;
         clear_hover_ = false;
         capturing_hotkey_ = false;
+        scroll_hover_ = false;
+        scroll_dragging_ = false;
+        touch_active_ = false;
+        touch_scroll_drag_ = false;
+        touch_pending_ = false;
+        touch_panning_ = false;
         ShowWindow(hwnd_, SW_SHOW);
         RaiseToFront();
         InvalidateRect(hwnd_, nullptr, FALSE);
@@ -813,6 +821,8 @@ bool SettingsWindow::Open(HINSTANCE instance, HWND owner, ID2D1Factory* d2d,
                             WS_POPUP, left, top, width, height, nullptr, nullptr,
                             instance, this);
     if (!hwnd_) return false;
+    // 注册触摸：滚动条与内容区都支持手指拖动。
+    RegisterTouchWindow(hwnd_, 0);
 
     const int radius = static_cast<int>(std::lround(16.0f * scale_));
     SetWindowRgn(hwnd_, CreateRoundRectRgn(0, 0, width + 1, height + 1, radius,
@@ -967,26 +977,16 @@ void SettingsWindow::Paint() {
     target_->PopAxisAlignedClip();
 
     if (scroll_max_ > 0.5f) {
-        const float track_left = card.right - 8.0f;
-        const float track_top = card.top + 10.0f;
-        const float track_bottom = card.bottom - 10.0f;
-        FillRound(target_, brush,
-                  Rect(track_left - 1.5f, track_top, track_left + 1.5f,
-                       track_bottom),
-                  1.5f, WithAlpha(palette_.text_primary, 0.10f));
-        const float track_height = track_bottom - track_top;
-        const float visible = clip.bottom - clip.top;
-        const float content = visible + scroll_max_;
-        const float thumb_height =
-            std::max(24.0f, track_height * visible / std::max(content, 1.0f));
-        float progress = scroll_max_ > 0.0f ? scroll_ / scroll_max_ : 0.0f;
-        progress = std::min(std::max(progress, 0.0f), 1.0f);
-        const float thumb_top =
-            track_top + (track_height - thumb_height) * progress;
-        FillRound(target_, brush,
-                  Rect(track_left - 1.5f, thumb_top, track_left + 1.5f,
-                       thumb_top + thumb_height),
-                  1.5f, WithAlpha(palette_.text_primary, 0.32f));
+        const bool active = scroll_hover_ || scroll_dragging_;
+        const D2D1_RECT_F track = ScrollTrackRect();
+        const float radius = (track.right - track.left) * 0.5f;
+        FillRound(target_, brush, track, radius,
+                  WithAlpha(palette_.text_primary,
+                            active ? 0.16f : 0.10f));
+        const D2D1_RECT_F thumb = ScrollThumbRect();
+        FillRound(target_, brush, thumb, radius,
+                  WithAlpha(palette_.text_primary,
+                            active ? 0.54f : 0.32f));
     }
 
     DrawText(target_, brush, L"设置会自动保存到 config.ini", fonts_->meta,
@@ -1453,6 +1453,222 @@ void SettingsWindow::SetScroll(float value) {
 }
 
 // ---------------------------------------------------------------------------
+// 滚动条：鼠标与触摸共用同一套几何和拖动逻辑
+// ---------------------------------------------------------------------------
+
+float SettingsWindow::ScrollBarCenterX() const {
+    // 与主窗口一致：滚动条中心距面板右边缘 7 DIP。
+    return kWidth - kSidePad - 7.0f;
+}
+
+float SettingsWindow::ScrollTrackTop() const { return kCardTop + 10.0f; }
+
+float SettingsWindow::ScrollTrackBottom() const {
+    return (view_height_ - kFooterHeight + 4.0f) - 10.0f;
+}
+
+D2D1_RECT_F SettingsWindow::ScrollTrackRect() const {
+    const bool active = scroll_hover_ || scroll_dragging_;
+    const float width = active ? 7.0f : 3.0f;
+    const float center = ScrollBarCenterX();
+    return Rect(center - width * 0.5f, ScrollTrackTop(), center + width * 0.5f,
+                ScrollTrackBottom());
+}
+
+float SettingsWindow::ScrollThumbHeight() const {
+    const float track_height = ScrollTrackBottom() - ScrollTrackTop();
+    const float visible = (view_height_ - kFooterHeight + 4.0f - 1.0f) -
+                          (kCardTop + 1.0f);
+    const float content = visible + scroll_max_;
+    return std::max(28.0f,
+                    track_height * visible / std::max(content, 1.0f));
+}
+
+D2D1_RECT_F SettingsWindow::ScrollThumbRect() const {
+    const D2D1_RECT_F track = ScrollTrackRect();
+    const float thumb_height = ScrollThumbHeight();
+    float progress = scroll_max_ > 0.0f ? scroll_ / scroll_max_ : 0.0f;
+    progress = std::min(std::max(progress, 0.0f), 1.0f);
+    const float top =
+        track.top + (track.bottom - track.top - thumb_height) * progress;
+    return Rect(track.left, top, track.right, top + thumb_height);
+}
+
+D2D1_RECT_F SettingsWindow::ScrollBarHitRect() const {
+    const float center = ScrollBarCenterX();
+    return Rect(center - 8.0f, ScrollTrackTop(), center + 8.0f,
+                ScrollTrackBottom());
+}
+
+void SettingsWindow::BeginScrollDrag(float y) {
+    scroll_dragging_ = true;
+    const D2D1_RECT_F thumb = ScrollThumbRect();
+    if (y < thumb.top || y > thumb.bottom) {
+        const float track_height = ScrollTrackBottom() - ScrollTrackTop();
+        const float thumb_height = ScrollThumbHeight();
+        const float travel = std::max(1.0f, track_height - thumb_height);
+        float progress =
+            (y - ScrollTrackTop() - thumb_height * 0.5f) / travel;
+        progress = std::min(std::max(progress, 0.0f), 1.0f);
+        SetScroll(progress * scroll_max_);
+    }
+    scroll_drag_start_y_ = y;
+    scroll_drag_start_scroll_ = scroll_;
+}
+
+void SettingsWindow::UpdateScrollDrag(float y) {
+    const float track_height = ScrollTrackBottom() - ScrollTrackTop();
+    const float thumb_height = ScrollThumbHeight();
+    const float travel = std::max(1.0f, track_height - thumb_height);
+    const float ratio = scroll_max_ > 0.0f ? scroll_max_ / travel : 0.0f;
+    SetScroll(scroll_drag_start_scroll_ + (y - scroll_drag_start_y_) * ratio);
+}
+
+// ---------------------------------------------------------------------------
+// 触摸：内容区上下拖动滚动，滚动条区域直接拖动滑块
+// ---------------------------------------------------------------------------
+
+void SettingsWindow::HandleTouch(UINT count, HTOUCHINPUT handle) {
+    if (count == 0 || !handle) return;
+    std::vector<TOUCHINPUT> inputs(count);
+    if (!GetTouchInputInfo(handle, count, inputs.data(), sizeof(TOUCHINPUT))) {
+        return;
+    }
+    bool close_after = false;
+    for (const TOUCHINPUT& input : inputs) {
+        // TOUCHINPUT 坐标是物理屏幕的百分之一像素。
+        POINT point = {static_cast<LONG>(input.x / 100),
+                       static_cast<LONG>(input.y / 100)};
+        ScreenToClient(hwnd_, &point);
+        const float x = point.x / scale_;
+        const float y = point.y / scale_;
+        if ((input.dwFlags & TOUCHEVENTF_DOWN) != 0) {
+            if (touch_active_) continue;
+            touch_active_ = true;
+            touch_contact_id_ = input.dwID;
+            touch_last_tick_ = GetTickCount();
+            touch_panning_ = false;
+            touch_pending_ = false;
+            touch_scroll_drag_ = false;
+            if (menu_open_) continue;
+            touch_start_y_ = y;
+            touch_start_scroll_ = scroll_;
+            if (Contains(CloseRect(), x, y)) {
+                // 关闭动作留到抬手，避免误触。
+                touch_pending_ = true;
+            } else if (scroll_max_ > 0.5f &&
+                       Contains(ScrollBarHitRect(), x, y)) {
+                touch_scroll_drag_ = true;
+                BeginScrollDrag(y);
+            } else if (y >= kHeaderHeight) {
+                touch_pending_ = true;
+            }
+        } else if ((input.dwFlags & TOUCHEVENTF_MOVE) != 0) {
+            if (!touch_active_ || input.dwID != touch_contact_id_) continue;
+            touch_last_tick_ = GetTickCount();
+            if (touch_scroll_drag_) {
+                UpdateScrollDrag(y);
+                continue;
+            }
+            if (!touch_pending_ && !touch_panning_) continue;
+            const float delta = touch_start_y_ - y;
+            if (!touch_panning_ && scroll_max_ > 0.5f &&
+                std::fabs(delta) > 4.0f) {
+                touch_panning_ = true;
+                touch_pending_ = false;
+            }
+            if (touch_panning_) SetScroll(touch_start_scroll_ + delta);
+        } else if ((input.dwFlags & TOUCHEVENTF_UP) != 0) {
+            if (!touch_active_ || input.dwID != touch_contact_id_) continue;
+            touch_last_tick_ = GetTickCount();
+            touch_active_ = false;
+            if (touch_scroll_drag_) {
+                touch_scroll_drag_ = false;
+                scroll_dragging_ = false;
+                continue;
+            }
+            if (touch_panning_) {
+                touch_panning_ = false;
+                continue;
+            }
+            if (touch_pending_) {
+                touch_pending_ = false;
+                CancelHotkeyCaptureAt(x, y);
+                if (Contains(CloseRect(), x, y)) {
+                    close_after = true;
+                } else if (y >= kHeaderHeight &&
+                           !Contains(ScrollBarHitRect(), x, y)) {
+                    HandleRowClick(x, y);
+                }
+            }
+        }
+    }
+    CloseTouchInputHandle(handle);
+    if (close_after) {
+        Close();
+        return;
+    }
+    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void SettingsWindow::CancelHotkeyCaptureAt(float x, float y) {
+    if (!capturing_hotkey_) return;
+    const int hit = HitRow(x, y);
+    const bool on_control =
+        hit == RowShortcut &&
+        (Contains(ControlHitRect(ShortcutRect(hit)), x, y) ||
+         Contains(ControlHitRect(ShortcutClearRect(hit)), x, y));
+    if (on_control) return;
+    capturing_hotkey_ = false;
+    clear_hover_ = false;
+    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+// 行的点击动作：鼠标按下与触摸轻点共用。
+void SettingsWindow::HandleRowClick(float x, float y) {
+    const int row = HitRow(x, y);
+    if (row < 0) return;
+
+    if (row == RowShortcut) {
+        if ((settings_.hotkey_vk != 0 || capturing_hotkey_) &&
+            Contains(ControlHitRect(ShortcutClearRect(row)), x, y)) {
+            ClearHotkey();
+        } else if (Contains(ControlHitRect(ShortcutRect(row)), x, y)) {
+            capturing_hotkey_ = true;
+            clear_hover_ = false;
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+        return;
+    }
+    if (IsSubRow(row)) {
+        const bool parent_on = RowToggleValue(settings_, SubRowParent(row));
+        if (parent_on) {
+            if (SubRowIsChoice(row)) {
+                if (Contains(ControlHitRect(ChoiceRect(row)), x, y)) {
+                    ChooseRow(row);
+                }
+            } else if (Contains(ControlHitRect(ToggleRect(row)), x, y)) {
+                ToggleRow(row);
+            }
+        }
+        return;
+    }
+    if (kRows[row].toggle) {
+        if (Contains(ControlHitRect(ToggleRect(row)), x, y)) {
+            ToggleRow(row);
+        } else if (IsExpandable(row) &&
+                   Contains(ChevronHitRect(RowRect(row)), x, y)) {
+            ToggleExpanded(row);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+        return;
+    }
+    if (Contains(ControlHitRect(ChoiceRect(row)), x, y)) {
+        ChooseRow(row);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 消息处理
 // ---------------------------------------------------------------------------
 
@@ -1483,22 +1699,16 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
         case WM_ERASEBKGND:
             return 1;
 
+        case WM_TOUCH:
+            HandleTouch(LOWORD(wparam),
+                        reinterpret_cast<HTOUCHINPUT>(lparam));
+            return 0;
+
         case WM_LBUTTONDOWN: {
-            if (menu_open_) return 0;
+            if (menu_open_ || SyntheticMouseSuppressed()) return 0;
             const float x = GET_X_LPARAM(lparam) / scale_;
             const float y = GET_Y_LPARAM(lparam) / scale_;
-            if (capturing_hotkey_) {
-                const int hit = HitRow(x, y);
-                const bool on_control =
-                    hit == RowShortcut &&
-                    (Contains(ControlHitRect(ShortcutRect(hit)), x, y) ||
-                     Contains(ControlHitRect(ShortcutClearRect(hit)), x, y));
-                if (!on_control) {
-                    capturing_hotkey_ = false;
-                    clear_hover_ = false;
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                }
-            }
+            CancelHotkeyCaptureAt(x, y);
             if (Contains(CloseRect(), x, y)) {
                 Close();
                 return 0;
@@ -1510,52 +1720,21 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
                 GetWindowRect(hwnd, &drag_window_start_);
                 return 0;
             }
-            const int row = HitRow(x, y);
-            if (row < 0) return 0;
-
-            if (row == RowShortcut) {
-                if ((settings_.hotkey_vk != 0 || capturing_hotkey_) &&
-                    Contains(ControlHitRect(ShortcutClearRect(row)), x, y)) {
-                    ClearHotkey();
-                } else if (Contains(ControlHitRect(ShortcutRect(row)), x, y)) {
-                    capturing_hotkey_ = true;
-                    clear_hover_ = false;
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                }
+            if (scroll_max_ > 0.5f && Contains(ScrollBarHitRect(), x, y)) {
+                BeginScrollDrag(y);
+                SetCapture(hwnd);
                 return 0;
             }
-            if (IsSubRow(row)) {
-                const bool parent_on =
-                    RowToggleValue(settings_, SubRowParent(row));
-                if (parent_on) {
-                    if (SubRowIsChoice(row)) {
-                        if (Contains(ControlHitRect(ChoiceRect(row)), x, y)) {
-                            ChooseRow(row);
-                        }
-                    } else if (Contains(ControlHitRect(ToggleRect(row)), x,
-                                        y)) {
-                        ToggleRow(row);
-                    }
-                }
-                return 0;
-            }
-            if (kRows[row].toggle) {
-                if (Contains(ControlHitRect(ToggleRect(row)), x, y)) {
-                    ToggleRow(row);
-                } else if (IsExpandable(row) &&
-                           Contains(ChevronHitRect(RowRect(row)), x, y)) {
-                    ToggleExpanded(row);
-                    InvalidateRect(hwnd, nullptr, FALSE);
-                }
-                return 0;
-            }
-            if (Contains(ControlHitRect(ChoiceRect(row)), x, y)) {
-                ChooseRow(row);
-            }
+            HandleRowClick(x, y);
             return 0;
         }
 
         case WM_MOUSEMOVE: {
+            if (SyntheticMouseSuppressed()) return 0;
+            if (scroll_dragging_) {
+                UpdateScrollDrag(GET_Y_LPARAM(lparam) / scale_);
+                return 0;
+            }
             if (dragging_) {
                 POINT cursor = {};
                 GetCursorPos(&cursor);
@@ -1574,6 +1753,12 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             }
             const float x = GET_X_LPARAM(lparam) / scale_;
             const float y = GET_Y_LPARAM(lparam) / scale_;
+            const bool over_scroll =
+                scroll_max_ > 0.5f && Contains(ScrollBarHitRect(), x, y);
+            if (over_scroll != scroll_hover_) {
+                scroll_hover_ = over_scroll;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
             const bool close = Contains(CloseRect(), x, y);
             if (close != close_hover_) {
                 close_hover_ = close;
@@ -1617,7 +1802,8 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
                 }
             }
             SetCursor(LoadCursorW(
-                nullptr, (interactive || close) ? IDC_HAND : IDC_ARROW));
+                nullptr,
+                (interactive || close || over_scroll) ? IDC_HAND : IDC_ARROW));
             return 0;
         }
 
@@ -1626,10 +1812,18 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             close_hover_ = false;
             clear_hover_ = false;
             hover_row_ = -1;
+            scroll_hover_ = false;
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
 
         case WM_LBUTTONUP:
+            if (SyntheticMouseSuppressed()) return 0;
+            if (scroll_dragging_) {
+                scroll_dragging_ = false;
+                if (GetCapture() == hwnd) ReleaseCapture();
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
             if (dragging_) {
                 dragging_ = false;
                 if (GetCapture() == hwnd) ReleaseCapture();
@@ -1638,6 +1832,10 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             break;
 
         case WM_CAPTURECHANGED:
+            if (scroll_dragging_) {
+                scroll_dragging_ = false;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
             if (dragging_) {
                 dragging_ = false;
                 tracking_leave_ = false;

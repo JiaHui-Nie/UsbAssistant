@@ -164,7 +164,7 @@ PowerShell 下要把整个参数加引号，否则 `x.y.z` 会被当成多个参
 | `CapacityBase` | `1024` | `1024` Windows 风格，`1000` 厂商风格 |
 | `CloseAction` | `1` | `0` 退出程序，`1` 隐藏窗口（默认，托盘常驻） |
 | `SkipCloseConfirm` | `0` | `1` 关闭时不再确认 |
-| `EmptyHideSec` | `0` | 无设备自动隐藏秒数，`0` 不隐藏 |
+| `EmptyHideSec` | `0` | 无设备自动隐藏秒数，`-1` 立即隐藏，`0` 不隐藏 |
 | `EdgeCollapse` | `0` | `1` 允许拖到屏幕边缘收起 |
 | `AutoCheckUpdates` | `1` | `1` 开启自动检查更新 |
 | `UpdateFrequency` | `0` | `0` 软件启动时、`1` 每小时、`2` 每天、`3` 每周、`4` 每月 |

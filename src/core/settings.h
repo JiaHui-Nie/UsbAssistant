@@ -27,7 +27,7 @@ struct Settings {
     int capacity_base = 1024;       // 1000 = 厂商进制
     int close_action = 1;           // 0 = 退出，1 = 隐藏到托盘（托盘常驻）
     bool skip_close_confirm = false;
-    int empty_hide_seconds = 0;     // 0 = 不自动隐藏
+    int empty_hide_seconds = 0;     // -1 = 立即隐藏，0 = 不自动隐藏
     bool edge_collapse = false;
     // 全局快捷键：mods 为 MOD_* 位组合，vk 为虚拟键码；vk == 0 表示未设置。
     int hotkey_mods = 0;

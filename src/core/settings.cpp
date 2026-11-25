@@ -97,7 +97,7 @@ void Settings::Normalize() {
         std::clamp(occupants_refresh_seconds, 1, 60);
     capacity_base = capacity_base == 1000 ? 1000 : 1024;
     close_action = close_action == 1 ? 1 : 0;
-    empty_hide_seconds = std::clamp(empty_hide_seconds, 0, 86400);
+    empty_hide_seconds = std::clamp(empty_hide_seconds, -1, 86400);
     main_height_percent = std::clamp(main_height_percent, 20, 100);
     update_frequency = std::clamp(update_frequency, 0, 4);
     hotkey_mods &= (MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN);

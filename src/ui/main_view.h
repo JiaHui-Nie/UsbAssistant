@@ -164,6 +164,12 @@ public:
     bool OnWheel(float delta);
     void CancelInteraction();
 
+    // 触摸屏：内容区上下拖动滚动内容，滚动条区域直接拖动滑块；
+    // 轻点按鼠标抬起的同一套逻辑生效。返回 false 表示该触点不参与滚动。
+    bool OnTouchDown(float x, float y);
+    bool OnTouchMove(float x, float y);
+    ViewAction OnTouchUp(float x, float y);
+
     Hit HitTest(float x, float y) const;
     bool OverInteractive(float x, float y) const;
     bool OverPanel(float x, float y) const;
@@ -193,6 +199,7 @@ private:
     D2D1_RECT_F ScrollThumbRect() const;
     void SetHover(const Hit& hit);
     void SetScrollTarget(float value);
+    void BeginScrollDrag(float y);
     float HoverEject(std::uint32_t disk_number) const;
     float HoverOpen(wchar_t letter) const;
     float HoverVolume(const std::wstring& volume_path) const;
@@ -228,6 +235,12 @@ private:
     float scroll_drag_start_y_ = 0.0f;
     float scroll_drag_start_target_ = 0.0f;
     float scroll_grow_ = 0.0f;
+
+    // 触摸拖动：按下后先观察是否超过阈值，避免轻点被误判为拖动。
+    bool touch_tracking_ = false;
+    bool touch_panning_ = false;
+    float touch_start_y_ = 0.0f;
+    float touch_start_target_ = 0.0f;
 
     bool dragging_window_ = false;
     bool edge_clamping_ = false;

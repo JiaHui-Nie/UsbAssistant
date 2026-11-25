@@ -81,11 +81,31 @@ private:
 
     void ToggleRow(int row);
     void ChooseRow(int row);
+    void CancelHotkeyCaptureAt(float x, float y);
+    void HandleRowClick(float x, float y);
     void HandleHotkeyCapture(int vk);
     void ClearHotkey();
     void ApplyHotkey(int mods, int vk);
     void NotifyChange();
     void SetScroll(float value);
+
+    // 滚动条：几何与拖动（鼠标与触摸共用）。
+    float ScrollBarCenterX() const;
+    float ScrollTrackTop() const;
+    float ScrollTrackBottom() const;
+    D2D1_RECT_F ScrollTrackRect() const;
+    D2D1_RECT_F ScrollThumbRect() const;
+    D2D1_RECT_F ScrollBarHitRect() const;
+    float ScrollThumbHeight() const;
+    void BeginScrollDrag(float y);
+    void UpdateScrollDrag(float y);
+
+    // 触摸屏：内容区上下拖动滚动，滚动条区域直接拖动滑块。
+    void HandleTouch(UINT count, HTOUCHINPUT handle);
+    bool SyntheticMouseSuppressed() const {
+        return touch_active_ ||
+               static_cast<DWORD>(GetTickCount() - touch_last_tick_) < 300;
+    }
 
     HINSTANCE instance_ = nullptr;
     HWND hwnd_ = nullptr;
@@ -116,6 +136,19 @@ private:
     bool dragging_ = false;
     POINT drag_cursor_start_ = {};
     RECT drag_window_start_ = {};
+    bool scroll_hover_ = false;
+    bool scroll_dragging_ = false;
+    float scroll_drag_start_y_ = 0.0f;
+    float scroll_drag_start_scroll_ = 0.0f;
+    // 触摸屏：只跟踪第一个触点，其余触点在抬手前忽略。
+    bool touch_active_ = false;
+    DWORD touch_contact_id_ = 0;
+    DWORD touch_last_tick_ = 0;
+    bool touch_scroll_drag_ = false;
+    bool touch_pending_ = false;
+    bool touch_panning_ = false;
+    float touch_start_y_ = 0.0f;
+    float touch_start_scroll_ = 0.0f;
 };
 
 }  // namespace usb::ui

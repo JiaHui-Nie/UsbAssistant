@@ -367,6 +367,8 @@ bool Application::Initialize(HINSTANCE instance, bool start_hidden) {
                             nullptr, instance, this);
     if (!hwnd_) return false;
     view_.Attach(hwnd_);
+    // 注册触摸：主窗口的滚动条与内容区都支持手指拖动。
+    RegisterTouchWindow(hwnd_, 0);
     {
         std::lock_guard<std::mutex> lock(post_target_->mutex);
         post_target_->hwnd = hwnd_;
@@ -1820,11 +1822,16 @@ void Application::ArmEmptyHideTimer() {
     empty_hide_armed_ = false;
     const bool empty = !devices_ || devices_->empty();
     if (!empty || in_tray_ || edge_collapsed_ ||
-        settings_.empty_hide_seconds <= 0) {
+        settings_.empty_hide_seconds == 0) {
         return;
     }
-    SetTimer(hwnd_, kTimerEmptyHide,
-             static_cast<UINT>(settings_.empty_hide_seconds) * 1000, nullptr);
+    // -1 表示“立即隐藏”，用最短定时器等待一次消息循环，避免在扫描
+    // 回调里直接隐藏窗口造成重入。
+    const UINT delay =
+        settings_.empty_hide_seconds < 0
+            ? 1u
+            : static_cast<UINT>(settings_.empty_hide_seconds) * 1000;
+    SetTimer(hwnd_, kTimerEmptyHide, delay, nullptr);
     empty_hide_armed_ = true;
 }
 
@@ -2224,8 +2231,51 @@ LRESULT Application::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
                        : HTTRANSPARENT;
         }
 
+        case WM_TOUCH: {
+            const UINT count = LOWORD(wparam);
+            std::vector<TOUCHINPUT> inputs(count);
+            if (count == 0 ||
+                !GetTouchInputInfo(reinterpret_cast<HTOUCHINPUT>(lparam), count,
+                                   inputs.data(), sizeof(TOUCHINPUT))) {
+                CloseTouchInputHandle(reinterpret_cast<HTOUCHINPUT>(lparam));
+                return 0;
+            }
+            for (const TOUCHINPUT& input : inputs) {
+                // TOUCHINPUT 坐标是物理屏幕的百分之一像素。
+                POINT point = {static_cast<LONG>(input.x / 100),
+                               static_cast<LONG>(input.y / 100)};
+                ScreenToClient(hwnd, &point);
+                const float x = point.x / scale_;
+                const float y = point.y / scale_;
+                if ((input.dwFlags & TOUCHEVENTF_DOWN) != 0) {
+                    if (touch_active_) continue;
+                    touch_active_ = true;
+                    touch_contact_id_ = input.dwID;
+                    touch_last_tick_ = GetTickCount();
+                    view_.OnTouchDown(x, y);
+                } else if ((input.dwFlags & TOUCHEVENTF_MOVE) != 0) {
+                    if (!touch_active_ || input.dwID != touch_contact_id_) {
+                        continue;
+                    }
+                    touch_last_tick_ = GetTickCount();
+                    view_.OnTouchMove(x, y);
+                } else if ((input.dwFlags & TOUCHEVENTF_UP) != 0) {
+                    if (!touch_active_ || input.dwID != touch_contact_id_) {
+                        continue;
+                    }
+                    touch_active_ = false;
+                    touch_last_tick_ = GetTickCount();
+                    const ui::ViewAction action = view_.OnTouchUp(x, y);
+                    if (action.kind != ui::ActionKind::None) OnAction(action);
+                }
+            }
+            CloseTouchInputHandle(reinterpret_cast<HTOUCHINPUT>(lparam));
+            StartAnimation();
+            return 0;
+        }
+
         case WM_LBUTTONDOWN: {
-            if (in_tray_) return 0;
+            if (in_tray_ || SyntheticMouseSuppressed()) return 0;
             const float x = GET_X_LPARAM(lparam) / scale_;
             const float y = GET_Y_LPARAM(lparam) / scale_;
             const ui::ViewAction action = view_.OnMouseDown(x, y);
@@ -2235,6 +2285,7 @@ LRESULT Application::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
         }
 
         case WM_MOUSEMOVE: {
+            if (SyntheticMouseSuppressed()) return 0;
             if (!tracking_leave_) {
                 TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, hwnd, 0};
                 TrackMouseEvent(&track);
@@ -2258,6 +2309,7 @@ LRESULT Application::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             return 0;
 
         case WM_LBUTTONUP: {
+            if (SyntheticMouseSuppressed()) return 0;
             const float x = GET_X_LPARAM(lparam) / scale_;
             const float y = GET_Y_LPARAM(lparam) / scale_;
             const ui::ViewAction action = view_.OnMouseUp(x, y);
