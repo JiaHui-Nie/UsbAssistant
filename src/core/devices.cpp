@@ -167,6 +167,12 @@ std::wstring FallbackPartitionLabel(const Partition& part, bool removable_media)
     if (part.kind == PartitionKind::Esp) return L"ESP";
     if (part.kind == PartitionKind::Msr) return L"MSR";
     if (!part.label.empty()) return part.label;
+    // 卷标为空时：本地磁盘显示「本地磁盘」；可移动盘沿用图标使用的
+    // removable_media 区分，U 盘与移动硬盘各用原占位名。
+    if (!part.root.empty() &&
+        GetDriveTypeW(part.root.c_str()) == DRIVE_FIXED) {
+        return L"本地磁盘";
+    }
     return removable_media ? L"U 盘" : L"移动硬盘";
 }
 

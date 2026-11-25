@@ -15,7 +15,7 @@ struct Partition {
     wchar_t letter = 0;         // 盘符；无盘符（隐藏分区）时为 0
     std::wstring root;          // "F:\"；无盘符时为空
     std::wstring volume_path;   // "\\?\Volume{...}"；已去掉末尾反斜杠
-    std::wstring label;         // 卷标，缺省时是「U 盘」/「本地磁盘」/「ESP」/「MSR」
+    std::wstring label;         // 卷标，缺省时是「本地磁盘」/「U 盘」/「移动硬盘」/「ESP」/「MSR」
     std::wstring filesystem;    // NTFS / exFAT / FAT32 / 未知文件系统
     PartitionKind kind = PartitionKind::Normal;
     std::uint64_t total = 0;
