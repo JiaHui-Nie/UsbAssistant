@@ -279,6 +279,16 @@ void UpdaterApp::StartCheck() {
     checking_ = true;
     USB_LOG_INFO(L"update", L"开始检查更新：current=%s config=%s arch=%s",
                  kAppVersion, kBuildConfigLabel, kBuildArchLabel);
+    if (IsDevBuild()) {
+        // 开发构建没有数字版本号，既没有可比对的对象，也就不该占用接口。
+        USB_LOG_INFO(L"update", L"开发构建（dev）不参与更新检查");
+        RecordLastUpdateCheck(NowSeconds());
+        auto payload = std::make_unique<CheckPayload>();
+        payload->status = static_cast<int>(ReleaseFetchStatus::Ok);
+        PostPayload(post_target_, kMessageCheckDone, std::move(payload));
+        return;
+    }
+
     const std::shared_ptr<PostTarget> target = post_target_;
     worker_.Post([target]() {
         auto payload = std::make_unique<CheckPayload>();
@@ -329,6 +339,12 @@ void UpdaterApp::HandleCheckResult(int status, bool update_available,
     if (!update_available) {
         if (autocheck_) {
             Finish();
+            return;
+        }
+        if (IsDevBuild()) {
+            // 不要对开发构建谎称“已是最新版本”。
+            ShowStage(ui::UpdaterStage::UpToDate,
+                      L"当前是开发版本（dev），不参与更新检查。");
             return;
         }
         ShowStage(ui::UpdaterStage::UpToDate,
@@ -473,7 +489,12 @@ void UpdaterApp::RunInstall(ReleaseAsset asset) {
     // 先结束主程序：优先优雅退出，超时再强制结束。
     const RunningApp running = FindRunningApp();
     const bool was_running = running.window != nullptr;
-    USB_LOG_INFO(L"update", L"更新前主程序正在运行：%d", was_running ? 1 : 0);
+    // 主窗口不可见说明用户此前把它收进了托盘（或折叠到屏幕边缘）。
+    // 重启时要带上 --autostart 才能保持隐藏，否则新进程会把窗口弹出来。
+    const bool was_hidden = was_running && !IsWindowVisible(running.window);
+    const wchar_t* relaunch_arguments = was_hidden ? L"--autostart" : L"";
+    USB_LOG_INFO(L"update", L"更新前主程序正在运行：%d 可见：%d",
+                 was_running ? 1 : 0, was_hidden ? 0 : 1);
     if (was_running) {
         const StopAppResult stop = RequestAppExit(running, 5000, &error);
         if (stop == StopAppResult::Failed) {
@@ -490,7 +511,7 @@ void UpdaterApp::RunInstall(ReleaseAsset asset) {
     const std::wstring target_main = app_dir + L"\\" + kMainExeName;
     if (!CopyWithRetry(new_main, target_main)) {
         USB_LOG_ERROR(L"update", L"替换主程序失败");
-        if (was_running) LaunchApp(target_main, L"", app_dir);
+        if (was_running) LaunchApp(target_main, relaunch_arguments, app_dir);
         RemoveTree(temp_root);
         PostInstallStage(static_cast<int>(InstallStage::Failed),
                          L"更新失败：无法替换程序文件。");
@@ -503,7 +524,7 @@ void UpdaterApp::RunInstall(ReleaseAsset asset) {
 
     RemoveTree(temp_root);
 
-    if (was_running && !LaunchApp(target_main, L"", app_dir)) {
+    if (was_running && !LaunchApp(target_main, relaunch_arguments, app_dir)) {
         PostInstallStage(
             static_cast<int>(InstallStage::Failed),
             L"更新已完成，但无法重新启动程序，请手动打开。");
