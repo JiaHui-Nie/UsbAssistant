@@ -171,7 +171,7 @@ constexpr SubRowSpec kSubRows[] = {
     {RowHiddenPartitions, RowHiddenMsr, L"MSR 分区", false},
     {RowHiddenPartitions, RowHiddenOther, L"其他无盘符分区", false},
     {RowAutoCheckUpdates, RowUpdateFrequency, L"更新频率", true},
-    {RowAutoCheckUpdates, RowSilentUpdate, L"静默更新（不弹窗）", false},
+    {RowAutoCheckUpdates, RowSilentUpdate, L"静默更新", false},
 };
 
 const SubRowSpec* FindSubRow(int row) {
