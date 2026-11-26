@@ -225,10 +225,22 @@ constexpr std::uint8_t kDistExtra[30] = {0, 0, 0, 0, 1, 1, 2, 2,  3,  3,
                                          4, 4, 5, 5, 6, 6, 7, 7,  8,  8,
                                          9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
 
+// 解压过程中每产生这么多字节回调一次进度，避免逐字节丢失进度或频繁回调。
+constexpr std::uint64_t kInflateReportBytes = 64 * 1024;
+
 bool Inflate(const std::uint8_t* input, std::size_t input_size,
-             std::size_t expected_size, std::vector<std::uint8_t>* output) {
+             std::size_t expected_size, std::vector<std::uint8_t>* output,
+             const std::function<void(std::uint64_t)>& progress = {}) {
     output->clear();
     output->reserve(expected_size);
+    std::uint64_t next_report = kInflateReportBytes;
+    const auto report = [&]() {
+        if (!progress) return;
+        const std::uint64_t size = output->size();
+        if (size < next_report) return;
+        next_report = size + kInflateReportBytes;
+        progress(size);
+    };
 
     BitReader reader(input, input_size);
     bool last = false;
@@ -254,6 +266,7 @@ bool Inflate(const std::uint8_t* input, std::size_t input_size,
                 if (!reader.Bits(8, &byte)) return false;
                 output->push_back(static_cast<std::uint8_t>(byte));
             }
+            report();
             continue;
         }
         if (type == 3) return false;
@@ -348,6 +361,7 @@ bool Inflate(const std::uint8_t* input, std::size_t input_size,
             if (symbol < 256) {
                 if (output->size() >= expected_size) return false;
                 output->push_back(static_cast<std::uint8_t>(symbol));
+                report();
                 continue;
             }
             if (symbol == 256) break;
@@ -370,6 +384,7 @@ bool Inflate(const std::uint8_t* input, std::size_t input_size,
             for (std::size_t i = 0; i < length; ++i) {
                 output->push_back((*output)[output->size() - distance]);
             }
+            report();
         }
     }
     return output->size() == expected_size;
@@ -523,7 +538,22 @@ bool ExtractAll(const std::wstring& zip_path, const std::wstring& dest_dir,
     std::uint64_t total_bytes = 0;
     for (const Entry& entry : entries) total_bytes += entry.uncompressed_size;
     std::uint64_t done_bytes = 0;
-    if (progress) progress(0, total_bytes);
+
+    // 解压时每 64KB 产生一次字节进度；这里再做一次轻量节流（累计 256KB
+    // 或距上次上报 60ms），避免把消息队列刷满拖慢解压。
+    std::uint64_t reported_bytes = 0;
+    ULONGLONG reported_tick = GetTickCount64();
+    const auto report = [&](std::uint64_t done, bool force) {
+        if (!progress) return;
+        if (!force && done - reported_bytes < 256 * 1024 &&
+            GetTickCount64() - reported_tick < 60) {
+            return;
+        }
+        reported_bytes = done;
+        reported_tick = GetTickCount64();
+        progress(done, total_bytes);
+    };
+    report(0, true);
 
     for (const Entry& entry : entries) {
         if (entry.name.empty()) continue;
@@ -546,9 +576,21 @@ bool ExtractAll(const std::wstring& zip_path, const std::wstring& dest_dir,
         const std::uint8_t* source = data.data() + data_start;
         std::vector<std::uint8_t> content;
         if (entry.method == 0) {
-            content.assign(source, source + entry.compressed_size);
+            // 未压缩条目也按块推进，保证进度连续。
+            content.reserve(entry.compressed_size);
+            for (std::size_t offset = 0; offset < entry.compressed_size;) {
+                const std::size_t chunk = std::min<std::size_t>(
+                    kInflateReportBytes, entry.compressed_size - offset);
+                content.insert(content.end(), source + offset,
+                               source + offset + chunk);
+                offset += chunk;
+                report(done_bytes + offset, false);
+            }
         } else if (!Inflate(source, entry.compressed_size,
-                            entry.uncompressed_size, &content)) {
+                            entry.uncompressed_size, &content,
+                            [&](std::uint64_t produced) {
+                                report(done_bytes + produced, false);
+                            })) {
             return fail(L"更新包解压失败");
         }
         if (content.size() != entry.uncompressed_size) {
@@ -570,7 +612,7 @@ bool ExtractAll(const std::wstring& zip_path, const std::wstring& dest_dir,
         }
         if (!WriteBytes(target, content)) return fail(L"无法写入解压文件");
         done_bytes += entry.uncompressed_size;
-        if (progress) progress(done_bytes, total_bytes);
+        report(done_bytes, true);
         USB_LOG_INFO(L"zip", L"解压：%s（%llu 字节）", target.c_str(),
                      static_cast<unsigned long long>(content.size()));
     }
