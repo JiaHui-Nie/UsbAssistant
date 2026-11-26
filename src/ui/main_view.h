@@ -1,4 +1,4 @@
-// 主界面视图：布局、绘制、命中测试、鼠标/滚轮交互与动画。
+// 主界面视图：布局、绘制、命中测试、指针/滚轮交互与动画。
 // 不持有业务数据，所有内容通过 Model 注入；语义动作通过 ViewAction 返回。
 #pragma once
 
@@ -14,6 +14,7 @@
 
 #include "core/models.h"
 #include "ui/canvas.h"
+#include "ui/pointer.h"
 #include "ui/text.h"
 #include "ui/theme.h"
 
@@ -157,18 +158,14 @@ public:
     void HideToast();
     void ResetHover();
 
-    ViewAction OnMouseDown(float x, float y);
-    ViewAction OnMouseUp(float x, float y);
-    ViewAction OnMouseMove(float x, float y);
+    // 统一指针输入：鼠标与触摸共用同一套按下/移动/抬起判定。
+    // 触摸可拖动内容与滚动条；鼠标拖动标题栏移动窗口，不改滚动位置。
+    ViewAction OnPointerDown(float x, float y, PointerSource source);
+    ViewAction OnPointerMove(float x, float y, PointerSource source);
+    ViewAction OnPointerUp(float x, float y, PointerSource source);
     void OnMouseLeave();
     bool OnWheel(float delta);
     void CancelInteraction();
-
-    // 触摸屏：内容区上下拖动滚动内容，滚动条区域直接拖动滑块；
-    // 轻点按鼠标抬起的同一套逻辑生效。返回 false 表示该触点不参与滚动。
-    bool OnTouchDown(float x, float y);
-    bool OnTouchMove(float x, float y);
-    ViewAction OnTouchUp(float x, float y);
 
     Hit HitTest(float x, float y) const;
     bool OverInteractive(float x, float y) const;
@@ -225,27 +222,26 @@ private:
 
     Hit hovered_;
     Hit pressed_;
+    // 统一交互状态：同一时刻只允许一个进行中的手势。
+    enum class Interaction { None, Pressed, ScrollDrag, WindowDrag, Pan };
+    Interaction interaction_ = Interaction::None;
+    // 触摸拖动候选：按下先当作轻点，移动超过阈值才转为 Pan。
+    bool pan_started_ = false;
+    float press_y_ = 0.0f;
+    float press_scroll_ = 0.0f;
     // 最近一次鼠标移动的位置（屏幕坐标）。设备列表定时刷新会重建布局，
     // 仅靠索引无法判断指针下还是不是同一个按钮，需要按此位置重新命中。
     POINT pointer_screen_ = {};
     bool pointer_inside_ = false;
     bool hover_revalidate_ = false;
     bool scroll_hover_ = false;
-    bool scroll_dragging_ = false;
     float scroll_drag_start_y_ = 0.0f;
     float scroll_drag_start_target_ = 0.0f;
     float scroll_grow_ = 0.0f;
 
-    // 触摸拖动：按下后先观察是否超过阈值，避免轻点被误判为拖动。
-    bool touch_tracking_ = false;
-    bool touch_panning_ = false;
-    float touch_start_y_ = 0.0f;
-    float touch_start_target_ = 0.0f;
-
-    bool dragging_window_ = false;
-    bool edge_clamping_ = false;
     POINT drag_cursor_start_ = {};
     RECT drag_window_start_ = {};
+    bool edge_clamping_ = false;
 
     std::unordered_map<std::uint32_t, float> hover_eject_;
     std::unordered_map<wchar_t, float> hover_open_;

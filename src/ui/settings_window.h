@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "core/settings.h"
+#include "ui/pointer.h"
 #include "ui/text.h"
 #include "ui/theme.h"
 
@@ -100,12 +101,12 @@ private:
     void BeginScrollDrag(float y);
     void UpdateScrollDrag(float y);
 
-    // 触摸屏：内容区上下拖动滚动，滚动条区域直接拖动滑块。
+    // 触摸屏入口：把 WM_TOUCH 拆成统一的指针事件。
     void HandleTouch(UINT count, HTOUCHINPUT handle);
-    bool SyntheticMouseSuppressed() const {
-        return touch_active_ ||
-               static_cast<DWORD>(GetTickCount() - touch_last_tick_) < 300;
-    }
+    // 统一指针输入：鼠标与触摸共用同一套按下/移动/抬起判定。
+    void OnPointerDown(float x, float y, PointerSource source);
+    void OnPointerMove(float x, float y, PointerSource source);
+    void OnPointerUp(float x, float y, PointerSource source);
 
     HINSTANCE instance_ = nullptr;
     HWND hwnd_ = nullptr;
@@ -140,15 +141,17 @@ private:
     bool scroll_dragging_ = false;
     float scroll_drag_start_y_ = 0.0f;
     float scroll_drag_start_scroll_ = 0.0f;
+    // 统一指针状态：按下先记目标，抬手才触发点击；触摸移动超过阈值
+    // 转为拖动滚动。
+    enum class PointerTarget { None, Close, Row };
+    PointerTarget pointer_target_ = PointerTarget::None;
+    bool pointer_pan_candidate_ = false;
+    bool pointer_panning_ = false;
+    float pointer_press_y_ = 0.0f;
+    float pointer_press_scroll_ = 0.0f;
     // 触摸屏：只跟踪第一个触点，其余触点在抬手前忽略。
-    bool touch_active_ = false;
+    bool touch_contact_active_ = false;
     DWORD touch_contact_id_ = 0;
-    DWORD touch_last_tick_ = 0;
-    bool touch_scroll_drag_ = false;
-    bool touch_pending_ = false;
-    bool touch_panning_ = false;
-    float touch_start_y_ = 0.0f;
-    float touch_start_scroll_ = 0.0f;
 };
 
 }  // namespace usb::ui

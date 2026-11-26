@@ -26,6 +26,7 @@
 #include "core/update_schedule.h"
 #include "core/version.h"
 #include "ui/draw.h"
+#include "ui/pointer.h"
 
 namespace usb::app {
 namespace {
@@ -2248,24 +2249,25 @@ LRESULT Application::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
                 const float x = point.x / scale_;
                 const float y = point.y / scale_;
                 if ((input.dwFlags & TOUCHEVENTF_DOWN) != 0) {
-                    if (touch_active_) continue;
-                    touch_active_ = true;
+                    if (touch_contact_active_) continue;
+                    touch_contact_active_ = true;
                     touch_contact_id_ = input.dwID;
-                    touch_last_tick_ = GetTickCount();
-                    view_.OnTouchDown(x, y);
+                    view_.OnPointerDown(x, y, ui::PointerSource::Touch);
                 } else if ((input.dwFlags & TOUCHEVENTF_MOVE) != 0) {
-                    if (!touch_active_ || input.dwID != touch_contact_id_) {
+                    if (!touch_contact_active_ ||
+                        input.dwID != touch_contact_id_) {
                         continue;
                     }
-                    touch_last_tick_ = GetTickCount();
-                    view_.OnTouchMove(x, y);
+                    view_.OnPointerMove(x, y, ui::PointerSource::Touch);
                 } else if ((input.dwFlags & TOUCHEVENTF_UP) != 0) {
-                    if (!touch_active_ || input.dwID != touch_contact_id_) {
+                    if (!touch_contact_active_ ||
+                        input.dwID != touch_contact_id_) {
                         continue;
                     }
-                    touch_active_ = false;
-                    touch_last_tick_ = GetTickCount();
-                    const ui::ViewAction action = view_.OnTouchUp(x, y);
+                    touch_contact_active_ = false;
+                    const ui::ViewAction action =
+                        view_.OnPointerUp(x, y, ui::PointerSource::Touch);
+                    if (GetCapture() == hwnd) ReleaseCapture();
                     if (action.kind != ui::ActionKind::None) OnAction(action);
                 }
             }
@@ -2275,17 +2277,18 @@ LRESULT Application::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
         }
 
         case WM_LBUTTONDOWN: {
-            if (in_tray_ || SyntheticMouseSuppressed()) return 0;
+            if (in_tray_ || ui::IsPromotedPointerMouse()) return 0;
             const float x = GET_X_LPARAM(lparam) / scale_;
             const float y = GET_Y_LPARAM(lparam) / scale_;
-            const ui::ViewAction action = view_.OnMouseDown(x, y);
+            const ui::ViewAction action =
+                view_.OnPointerDown(x, y, ui::PointerSource::Mouse);
             if (action.kind != ui::ActionKind::None) OnAction(action);
             StartAnimation();
             return 0;
         }
 
         case WM_MOUSEMOVE: {
-            if (SyntheticMouseSuppressed()) return 0;
+            if (ui::IsPromotedPointerMouse()) return 0;
             if (!tracking_leave_) {
                 TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, hwnd, 0};
                 TrackMouseEvent(&track);
@@ -2294,7 +2297,8 @@ LRESULT Application::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             if (empty_hide_armed_ && devices_->empty()) ArmEmptyHideTimer();
             const float x = GET_X_LPARAM(lparam) / scale_;
             const float y = GET_Y_LPARAM(lparam) / scale_;
-            const ui::ViewAction action = view_.OnMouseMove(x, y);
+            const ui::ViewAction action =
+                view_.OnPointerMove(x, y, ui::PointerSource::Mouse);
             if (action.kind != ui::ActionKind::None) OnAction(action);
             // 只有真的需要过渡动画时才启动定时器：拖动窗口时画面不变，
             // 每帧整窗重绘会拖慢窗口跟随，还会和拖动抢消息队列。
@@ -2309,10 +2313,11 @@ LRESULT Application::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             return 0;
 
         case WM_LBUTTONUP: {
-            if (SyntheticMouseSuppressed()) return 0;
+            if (ui::IsPromotedPointerMouse()) return 0;
             const float x = GET_X_LPARAM(lparam) / scale_;
             const float y = GET_Y_LPARAM(lparam) / scale_;
-            const ui::ViewAction action = view_.OnMouseUp(x, y);
+            const ui::ViewAction action =
+                view_.OnPointerUp(x, y, ui::PointerSource::Mouse);
             if (action.kind != ui::ActionKind::None) OnAction(action);
             StartAnimation();
             return 0;

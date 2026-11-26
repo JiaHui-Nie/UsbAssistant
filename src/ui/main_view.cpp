@@ -1045,12 +1045,12 @@ bool MainView::OverPanel(float x, float y) const {
 }
 
 // ---------------------------------------------------------------------------
-// 鼠标交互
+// 指针交互（鼠标与触摸共用）
 // ---------------------------------------------------------------------------
 
-ViewAction MainView::OnMouseDown(float x, float y) {
+ViewAction MainView::OnPointerDown(float x, float y, PointerSource source) {
     ViewAction action;
-    if (dragging_window_ || scroll_dragging_) return action;
+    if (interaction_ != Interaction::None) return action;
 
     const Hit hit = HitTest(x, y);
     if (hit.kind == HitKind::ScrollBar) {
@@ -1062,30 +1062,52 @@ ViewAction MainView::OnMouseDown(float x, float y) {
 
     if (hit.kind != HitKind::None) {
         pressed_ = hit;
+        interaction_ = Interaction::Pressed;
+    } else if (source == PointerSource::Mouse &&
+               model_.dialog == DialogKind::None && hwnd_ &&
+               y >= layout_.panel.top &&
+               y <= layout_.panel.top + kHeaderHeight &&
+               x >= layout_.panel.left && x <= layout_.panel.right) {
+        // 只允许鼠标拖动窗口；触摸拖动留给内容滚动。
+        interaction_ = Interaction::WindowDrag;
+        SetCapture(hwnd_);
+        GetCursorPos(&drag_cursor_start_);
+        GetWindowRect(hwnd_, &drag_window_start_);
+        return action;
+    }
+
+    if (source == PointerSource::Touch) {
+        if (model_.dialog == DialogKind::None && layout_.scrolling &&
+            y >= layout_.content_top &&
+            Contains(layout_.content_clip, x, y)) {
+            // 内容区先作为拖动候选，pressed_ 保留下来供轻点判定；
+            // 移动超过阈值时再清掉它。
+            interaction_ = Interaction::Pan;
+            pan_started_ = false;
+            press_y_ = y;
+            press_scroll_ = scroll_target_;
+        }
+        // 触摸会话由窗口捕获，保证抬手消息一定回到这里。
         if (hwnd_) SetCapture(hwnd_);
         return action;
     }
 
-    if (model_.dialog == DialogKind::None && hwnd_ &&
-        y >= layout_.panel.top && y <= layout_.panel.top + kHeaderHeight &&
-        x >= layout_.panel.left && x <= layout_.panel.right) {
-        dragging_window_ = true;
-        SetCapture(hwnd_);
-        GetCursorPos(&drag_cursor_start_);
-        GetWindowRect(hwnd_, &drag_window_start_);
-    }
+    if (interaction_ == Interaction::Pressed && hwnd_) SetCapture(hwnd_);
     return action;
 }
 
-ViewAction MainView::OnMouseMove(float x, float y) {
+ViewAction MainView::OnPointerMove(float x, float y, PointerSource source) {
     ViewAction action;
-    if (hwnd_) {
-        POINT cursor = {static_cast<LONG>(std::lround(x * scale_)),
-                        static_cast<LONG>(std::lround(y * scale_))};
-        if (ClientToScreen(hwnd_, &cursor)) pointer_screen_ = cursor;
+    if (source == PointerSource::Mouse) {
+        if (hwnd_) {
+            POINT cursor = {static_cast<LONG>(std::lround(x * scale_)),
+                            static_cast<LONG>(std::lround(y * scale_))};
+            if (ClientToScreen(hwnd_, &cursor)) pointer_screen_ = cursor;
+        }
+        pointer_inside_ = true;
     }
-    pointer_inside_ = true;
-    if (scroll_dragging_) {
+
+    if (interaction_ == Interaction::ScrollDrag) {
         const float track_height =
             layout_.content_clip.bottom - layout_.content_clip.top;
         const float thumb_height = ScrollThumbHeight();
@@ -1097,7 +1119,7 @@ ViewAction MainView::OnMouseMove(float x, float y) {
         return action;
     }
 
-    if (dragging_window_) {
+    if (interaction_ == Interaction::WindowDrag) {
         POINT cursor = {};
         GetCursorPos(&cursor);
         int new_x =
@@ -1118,6 +1140,24 @@ ViewAction MainView::OnMouseMove(float x, float y) {
         return action;
     }
 
+    if (interaction_ == Interaction::Pan) {
+        // 手指直接拖动内容：不做缓动，保证跟手。
+        const float delta = press_y_ - y;
+        if (!pan_started_ && std::fabs(delta) > 4.0f) {
+            pan_started_ = true;
+            pressed_ = Hit{};
+            scroll_hover_ = false;
+        }
+        if (pan_started_) {
+            scroll_target_ = std::min(std::max(press_scroll_ + delta, 0.0f),
+                                      layout_.scroll_max);
+            scroll_y_ = scroll_target_;
+        }
+        return action;
+    }
+
+    if (source == PointerSource::Touch) return action;
+
     const bool over_bar =
         layout_.scrolling && Contains(layout_.scroll_bar, x, y);
     if (over_bar != scroll_hover_) scroll_hover_ = over_bar;
@@ -1125,24 +1165,35 @@ ViewAction MainView::OnMouseMove(float x, float y) {
     return action;
 }
 
-ViewAction MainView::OnMouseUp(float x, float y) {
+ViewAction MainView::OnPointerUp(float x, float y, PointerSource source) {
     ViewAction action;
-    if (scroll_dragging_) {
-        scroll_dragging_ = false;
-        pressed_ = Hit{};
+    const Interaction state = interaction_;
+    const Hit pressed = pressed_;
+    const bool panning = pan_started_;
+    interaction_ = Interaction::None;
+    pan_started_ = false;
+    pressed_ = Hit{};
+
+    // 判定使用抬手前的快照；ReleaseCapture 触发的 WM_CAPTURECHANGED
+    // 会再次清理交互状态，不能放在判定之前。
+    if (state == Interaction::ScrollDrag) {
         if (hwnd_ && GetCapture() == hwnd_) ReleaseCapture();
         return action;
     }
-    if (dragging_window_) {
-        dragging_window_ = false;
+    if (state == Interaction::WindowDrag) {
+        if (source == PointerSource::Mouse) action.kind = ActionKind::DragEnded;
         if (hwnd_ && GetCapture() == hwnd_) ReleaseCapture();
-        action.kind = ActionKind::DragEnded;
+        return action;
+    }
+    if (state == Interaction::Pan && panning) {
+        if (hwnd_ && GetCapture() == hwnd_) ReleaseCapture();
         return action;
     }
 
+    // 轻点：鼠标与触摸走同一套命中判定。
     const Hit hit = HitTest(x, y);
-    if (hit.kind == pressed_.kind && hit.device == pressed_.device &&
-        hit.partition == pressed_.partition) {
+    if (hit.kind == pressed.kind && hit.device == pressed.device &&
+        hit.partition == pressed.partition) {
         switch (hit.kind) {
             case HitKind::Close:
                 action.kind = ActionKind::Close;
@@ -1187,7 +1238,6 @@ ViewAction MainView::OnMouseUp(float x, float y) {
                 break;
         }
     }
-    pressed_ = Hit{};
     if (hwnd_ && GetCapture() == hwnd_) ReleaseCapture();
     return action;
 }
@@ -1213,13 +1263,14 @@ bool MainView::OnWheel(float delta) {
 
 void MainView::CancelInteraction() {
     if (hwnd_ && GetCapture() == hwnd_) ReleaseCapture();
-    dragging_window_ = false;
-    scroll_dragging_ = false;
+    interaction_ = Interaction::None;
+    pan_started_ = false;
     pressed_ = Hit{};
 }
 
 void MainView::BeginScrollDrag(float y) {
-    scroll_dragging_ = true;
+    interaction_ = Interaction::ScrollDrag;
+    pan_started_ = false;
     const D2D1_RECT_F thumb = ScrollThumbRect();
     if (y < thumb.top || y > thumb.bottom) {
         const float track_height =
@@ -1236,88 +1287,6 @@ void MainView::BeginScrollDrag(float y) {
 }
 
 // ---------------------------------------------------------------------------
-// 触摸交互
-// ---------------------------------------------------------------------------
-
-bool MainView::OnTouchDown(float x, float y) {
-    if (model_.dialog != DialogKind::None) {
-        // 弹层不支持拖动滚动，但保留按钮点击。
-        const Hit hit = HitTest(x, y);
-        if (hit.kind != HitKind::None) pressed_ = hit;
-        return false;
-    }
-    if (layout_.scrolling && Contains(layout_.scroll_bar, x, y)) {
-        pressed_ = Hit{HitKind::ScrollBar, -1, -1};
-        BeginScrollDrag(y);
-        return false;
-    }
-    if (layout_.scrolling && y >= layout_.content_top &&
-        Contains(layout_.content_clip, x, y)) {
-        touch_tracking_ = true;
-        touch_panning_ = false;
-        touch_start_y_ = y;
-        touch_start_target_ = scroll_target_;
-        return true;
-    }
-    const Hit hit = HitTest(x, y);
-    if (hit.kind != HitKind::None) pressed_ = hit;
-    return false;
-}
-
-bool MainView::OnTouchMove(float x, float y) {
-    (void)x;
-    if (scroll_dragging_) {
-        const float track_height =
-            layout_.content_clip.bottom - layout_.content_clip.top;
-        const float thumb_height = ScrollThumbHeight();
-        const float travel = std::max(1.0f, track_height - thumb_height);
-        const float ratio =
-            travel > 0.0f ? layout_.scroll_max / travel : 0.0f;
-        scroll_target_ = std::min(
-            std::max(scroll_drag_start_target_ +
-                         (y - scroll_drag_start_y_) * ratio,
-                     0.0f),
-            layout_.scroll_max);
-        // 手指直接拖动时不做缓动，让滑块紧跟手指。
-        scroll_y_ = scroll_target_;
-        return true;
-    }
-    if (!touch_tracking_) return false;
-
-    const float delta = touch_start_y_ - y;
-    if (!touch_panning_ && std::fabs(delta) > 4.0f) {
-        touch_panning_ = true;
-        CancelInteraction();
-        scroll_hover_ = false;
-    }
-    if (!touch_panning_) return false;
-    scroll_target_ = std::min(std::max(touch_start_target_ + delta, 0.0f),
-                              layout_.scroll_max);
-    scroll_y_ = scroll_target_;
-    return true;
-}
-
-ViewAction MainView::OnTouchUp(float x, float y) {
-    ViewAction action;
-    if (scroll_dragging_) {
-        scroll_dragging_ = false;
-        pressed_ = Hit{};
-        return action;
-    }
-    if (!touch_tracking_) return action;
-
-    const bool panning = touch_panning_;
-    touch_tracking_ = false;
-    touch_panning_ = false;
-    if (panning) {
-        pressed_ = Hit{};
-        return action;
-    }
-    // 轻点：复用鼠标抬起时的按钮/对话框判定。
-    return OnMouseUp(x, y);
-}
-
-// ---------------------------------------------------------------------------
 // 动画与提示
 // ---------------------------------------------------------------------------
 
@@ -1329,8 +1298,10 @@ bool MainView::Tick() {
     more |= Ease(busy_scroll_, busy_scroll_target_, 0.22f, 0.35f);
     more |= Ease(toast_opacity_, toast_target_, 0.22f, 0.01f);
     more |= Ease(scroll_grow_,
-                 (scroll_hover_ || scroll_dragging_) ? 1.0f : 0.0f, 0.30f,
-                 0.008f);
+                 (scroll_hover_ || interaction_ == Interaction::ScrollDrag)
+                     ? 1.0f
+                     : 0.0f,
+                 0.30f, 0.008f);
 
     const auto* devices = model_.devices.get();
     for (auto it = hover_eject_.begin(); it != hover_eject_.end();) {
@@ -1409,7 +1380,9 @@ bool MainView::Animating() const {
     if (std::fabs(scroll_y_ - scroll_target_) > 0.35f) return true;
     if (std::fabs(busy_scroll_ - busy_scroll_target_) > 0.35f) return true;
     if (std::fabs(toast_opacity_ - toast_target_) > 0.01f) return true;
-    const float scroll_goal = (scroll_hover_ || scroll_dragging_) ? 1.0f : 0.0f;
+    const float scroll_goal =
+        (scroll_hover_ || interaction_ == Interaction::ScrollDrag) ? 1.0f
+                                                                   : 0.0f;
     if (std::fabs(scroll_grow_ - scroll_goal) > 0.008f) return true;
     for (const auto& item : hover_eject_) {
         if (item.second > 0.008f) return true;

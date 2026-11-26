@@ -766,10 +766,10 @@ bool SettingsWindow::Open(HINSTANCE instance, HWND owner, ID2D1Factory* d2d,
         capturing_hotkey_ = false;
         scroll_hover_ = false;
         scroll_dragging_ = false;
-        touch_active_ = false;
-        touch_scroll_drag_ = false;
-        touch_pending_ = false;
-        touch_panning_ = false;
+        pointer_target_ = PointerTarget::None;
+        pointer_pan_candidate_ = false;
+        pointer_panning_ = false;
+        touch_contact_active_ = false;
         ShowWindow(hwnd_, SW_SHOW);
         RaiseToFront();
         InvalidateRect(hwnd_, nullptr, FALSE);
@@ -1534,7 +1534,6 @@ void SettingsWindow::HandleTouch(UINT count, HTOUCHINPUT handle) {
     if (!GetTouchInputInfo(handle, count, inputs.data(), sizeof(TOUCHINPUT))) {
         return;
     }
-    bool close_after = false;
     for (const TOUCHINPUT& input : inputs) {
         // TOUCHINPUT 坐标是物理屏幕的百分之一像素。
         POINT point = {static_cast<LONG>(input.x / 100),
@@ -1543,72 +1542,181 @@ void SettingsWindow::HandleTouch(UINT count, HTOUCHINPUT handle) {
         const float x = point.x / scale_;
         const float y = point.y / scale_;
         if ((input.dwFlags & TOUCHEVENTF_DOWN) != 0) {
-            if (touch_active_) continue;
-            touch_active_ = true;
+            if (touch_contact_active_) continue;
+            touch_contact_active_ = true;
             touch_contact_id_ = input.dwID;
-            touch_last_tick_ = GetTickCount();
-            touch_panning_ = false;
-            touch_pending_ = false;
-            touch_scroll_drag_ = false;
-            if (menu_open_) continue;
-            touch_start_y_ = y;
-            touch_start_scroll_ = scroll_;
-            if (Contains(CloseRect(), x, y)) {
-                // 关闭动作留到抬手，避免误触。
-                touch_pending_ = true;
-            } else if (scroll_max_ > 0.5f &&
-                       Contains(ScrollBarHitRect(), x, y)) {
-                touch_scroll_drag_ = true;
-                BeginScrollDrag(y);
-            } else if (y >= kHeaderHeight) {
-                touch_pending_ = true;
-            }
+            OnPointerDown(x, y, PointerSource::Touch);
         } else if ((input.dwFlags & TOUCHEVENTF_MOVE) != 0) {
-            if (!touch_active_ || input.dwID != touch_contact_id_) continue;
-            touch_last_tick_ = GetTickCount();
-            if (touch_scroll_drag_) {
-                UpdateScrollDrag(y);
+            if (!touch_contact_active_ || input.dwID != touch_contact_id_) {
                 continue;
             }
-            if (!touch_pending_ && !touch_panning_) continue;
-            const float delta = touch_start_y_ - y;
-            if (!touch_panning_ && scroll_max_ > 0.5f &&
-                std::fabs(delta) > 4.0f) {
-                touch_panning_ = true;
-                touch_pending_ = false;
-            }
-            if (touch_panning_) SetScroll(touch_start_scroll_ + delta);
+            OnPointerMove(x, y, PointerSource::Touch);
         } else if ((input.dwFlags & TOUCHEVENTF_UP) != 0) {
-            if (!touch_active_ || input.dwID != touch_contact_id_) continue;
-            touch_last_tick_ = GetTickCount();
-            touch_active_ = false;
-            if (touch_scroll_drag_) {
-                touch_scroll_drag_ = false;
-                scroll_dragging_ = false;
+            if (!touch_contact_active_ || input.dwID != touch_contact_id_) {
                 continue;
             }
-            if (touch_panning_) {
-                touch_panning_ = false;
-                continue;
-            }
-            if (touch_pending_) {
-                touch_pending_ = false;
-                CancelHotkeyCaptureAt(x, y);
-                if (Contains(CloseRect(), x, y)) {
-                    close_after = true;
-                } else if (y >= kHeaderHeight &&
-                           !Contains(ScrollBarHitRect(), x, y)) {
-                    HandleRowClick(x, y);
-                }
-            }
+            touch_contact_active_ = false;
+            OnPointerUp(x, y, PointerSource::Touch);
         }
     }
     CloseTouchInputHandle(handle);
-    if (close_after) {
+    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void SettingsWindow::OnPointerDown(float x, float y, PointerSource source) {
+    if (menu_open_ || scroll_dragging_ || dragging_ ||
+        pointer_target_ != PointerTarget::None) {
+        return;
+    }
+    CancelHotkeyCaptureAt(x, y);
+
+    if (Contains(CloseRect(), x, y)) {
+        // 关闭动作留到抬手，避免误触。
+        pointer_target_ = PointerTarget::Close;
+        if (hwnd_) SetCapture(hwnd_);
+        return;
+    }
+    // 只有鼠标拖动标题栏移动窗口；触摸标题栏不参与拖动。
+    if (source == PointerSource::Mouse && y < kHeaderHeight) {
+        dragging_ = true;
+        if (hwnd_) SetCapture(hwnd_);
+        GetCursorPos(&drag_cursor_start_);
+        GetWindowRect(hwnd_, &drag_window_start_);
+        return;
+    }
+    if (scroll_max_ > 0.5f && Contains(ScrollBarHitRect(), x, y)) {
+        BeginScrollDrag(y);
+        if (hwnd_) SetCapture(hwnd_);
+        return;
+    }
+    if (y >= kHeaderHeight) {
+        // 行列先记录为点击目标，抬手再执行；触摸移动超过阈值转为拖动。
+        pointer_target_ = PointerTarget::Row;
+        pointer_pan_candidate_ =
+            source == PointerSource::Touch && scroll_max_ > 0.5f;
+        pointer_press_y_ = y;
+        pointer_press_scroll_ = scroll_;
+        if (hwnd_) SetCapture(hwnd_);
+    }
+}
+
+void SettingsWindow::OnPointerMove(float x, float y, PointerSource source) {
+    if (scroll_dragging_) {
+        UpdateScrollDrag(y);
+        return;
+    }
+    if (dragging_) {
+        POINT cursor = {};
+        GetCursorPos(&cursor);
+        SetWindowPos(hwnd_, nullptr,
+                     drag_window_start_.left +
+                         (cursor.x - drag_cursor_start_.x),
+                     drag_window_start_.top +
+                         (cursor.y - drag_cursor_start_.y),
+                     0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        return;
+    }
+    if (pointer_pan_candidate_) {
+        const float delta = pointer_press_y_ - y;
+        if (std::fabs(delta) > 4.0f) {
+            pointer_pan_candidate_ = false;
+            pointer_panning_ = true;
+            pointer_target_ = PointerTarget::None;
+        }
+        if (pointer_panning_) {
+            SetScroll(pointer_press_scroll_ + delta);
+            return;
+        }
+    }
+    if (source == PointerSource::Touch) return;
+
+    const bool over_scroll =
+        scroll_max_ > 0.5f && Contains(ScrollBarHitRect(), x, y);
+    if (over_scroll != scroll_hover_) {
+        scroll_hover_ = over_scroll;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+    const bool close = Contains(CloseRect(), x, y);
+    if (close != close_hover_) {
+        close_hover_ = close;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+    const int row = HitRow(x, y);
+    if (row != hover_row_) {
+        hover_row_ = row;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+    const bool clear =
+        row == RowShortcut &&
+        (settings_.hotkey_vk != 0 || capturing_hotkey_) &&
+        Contains(ControlHitRect(ShortcutClearRect(row)), x, y);
+    if (clear != clear_hover_) {
+        clear_hover_ = clear;
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+    bool interactive = false;
+    if (row >= 0) {
+        if (row == RowShortcut) {
+            interactive = Contains(ControlHitRect(ShortcutRect(row)), x, y);
+        } else if (IsSubRow(row)) {
+            const bool parent_on =
+                RowToggleValue(settings_, SubRowParent(row));
+            interactive =
+                parent_on &&
+                (SubRowIsChoice(row)
+                     ? Contains(ControlHitRect(ChoiceRect(row)), x, y)
+                     : Contains(ControlHitRect(ToggleRect(row)), x, y));
+        } else if (kRows[row].toggle) {
+            interactive =
+                Contains(ControlHitRect(ToggleRect(row)), x, y) ||
+                (IsExpandable(row) &&
+                 Contains(ChevronHitRect(RowRect(row)), x, y));
+        } else {
+            interactive = Contains(ControlHitRect(ChoiceRect(row)), x, y);
+        }
+    }
+    SetCursor(LoadCursorW(nullptr,
+                          (interactive || close || over_scroll) ? IDC_HAND
+                                                               : IDC_ARROW));
+}
+
+void SettingsWindow::OnPointerUp(float x, float y, PointerSource source) {
+    (void)source;
+    const PointerTarget target = pointer_target_;
+    const bool panning = pointer_panning_;
+    pointer_target_ = PointerTarget::None;
+    pointer_pan_candidate_ = false;
+    pointer_panning_ = false;
+
+    if (scroll_dragging_) {
+        scroll_dragging_ = false;
+        if (hwnd_ && GetCapture() == hwnd_) ReleaseCapture();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+    if (dragging_) {
+        dragging_ = false;
+        if (hwnd_ && GetCapture() == hwnd_) ReleaseCapture();
+        return;
+    }
+    if (panning) {
+        if (hwnd_ && GetCapture() == hwnd_) ReleaseCapture();
+        return;
+    }
+
+    // 先取快照再释放捕获：ReleaseCapture 触发的 WM_CAPTURECHANGED
+    // 会清理交互与悬停状态。
+    const bool close =
+        target == PointerTarget::Close && Contains(CloseRect(), x, y);
+    const bool click =
+        target == PointerTarget::Row && y >= kHeaderHeight &&
+        !(scroll_max_ > 0.5f && Contains(ScrollBarHitRect(), x, y));
+    if (hwnd_ && GetCapture() == hwnd_) ReleaseCapture();
+    if (close) {
         Close();
         return;
     }
-    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+    if (click) HandleRowClick(x, y);
 }
 
 void SettingsWindow::CancelHotkeyCaptureAt(float x, float y) {
@@ -1705,105 +1813,23 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             return 0;
 
         case WM_LBUTTONDOWN: {
-            if (menu_open_ || SyntheticMouseSuppressed()) return 0;
-            const float x = GET_X_LPARAM(lparam) / scale_;
-            const float y = GET_Y_LPARAM(lparam) / scale_;
-            CancelHotkeyCaptureAt(x, y);
-            if (Contains(CloseRect(), x, y)) {
-                Close();
-                return 0;
-            }
-            if (y < kHeaderHeight) {
-                dragging_ = true;
-                SetCapture(hwnd);
-                GetCursorPos(&drag_cursor_start_);
-                GetWindowRect(hwnd, &drag_window_start_);
-                return 0;
-            }
-            if (scroll_max_ > 0.5f && Contains(ScrollBarHitRect(), x, y)) {
-                BeginScrollDrag(y);
-                SetCapture(hwnd);
-                return 0;
-            }
-            HandleRowClick(x, y);
+            if (menu_open_ || ui::IsPromotedPointerMouse()) return 0;
+            OnPointerDown(GET_X_LPARAM(lparam) / scale_,
+                          GET_Y_LPARAM(lparam) / scale_,
+                          ui::PointerSource::Mouse);
             return 0;
         }
 
         case WM_MOUSEMOVE: {
-            if (SyntheticMouseSuppressed()) return 0;
-            if (scroll_dragging_) {
-                UpdateScrollDrag(GET_Y_LPARAM(lparam) / scale_);
-                return 0;
-            }
-            if (dragging_) {
-                POINT cursor = {};
-                GetCursorPos(&cursor);
-                SetWindowPos(hwnd, nullptr,
-                             drag_window_start_.left +
-                                 (cursor.x - drag_cursor_start_.x),
-                             drag_window_start_.top +
-                                 (cursor.y - drag_cursor_start_.y),
-                             0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-                return 0;
-            }
+            if (ui::IsPromotedPointerMouse()) return 0;
             if (!tracking_leave_) {
                 TRACKMOUSEEVENT track = {sizeof(track), TME_LEAVE, hwnd, 0};
                 TrackMouseEvent(&track);
                 tracking_leave_ = true;
             }
-            const float x = GET_X_LPARAM(lparam) / scale_;
-            const float y = GET_Y_LPARAM(lparam) / scale_;
-            const bool over_scroll =
-                scroll_max_ > 0.5f && Contains(ScrollBarHitRect(), x, y);
-            if (over_scroll != scroll_hover_) {
-                scroll_hover_ = over_scroll;
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            const bool close = Contains(CloseRect(), x, y);
-            if (close != close_hover_) {
-                close_hover_ = close;
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            const int row = HitRow(x, y);
-            if (row != hover_row_) {
-                hover_row_ = row;
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            const bool clear =
-                row == RowShortcut &&
-                (settings_.hotkey_vk != 0 || capturing_hotkey_) &&
-                Contains(ControlHitRect(ShortcutClearRect(row)), x, y);
-            if (clear != clear_hover_) {
-                clear_hover_ = clear;
-                InvalidateRect(hwnd, nullptr, FALSE);
-            }
-            bool interactive = false;
-            if (row >= 0) {
-                if (row == RowShortcut) {
-                    interactive =
-                        Contains(ControlHitRect(ShortcutRect(row)), x, y);
-                } else if (IsSubRow(row)) {
-                    const bool parent_on =
-                        RowToggleValue(settings_, SubRowParent(row));
-                    interactive =
-                        parent_on &&
-                        (SubRowIsChoice(row)
-                             ? Contains(ControlHitRect(ChoiceRect(row)), x, y)
-                             : Contains(ControlHitRect(ToggleRect(row)), x,
-                                        y));
-                } else if (kRows[row].toggle) {
-                    interactive =
-                        Contains(ControlHitRect(ToggleRect(row)), x, y) ||
-                        (IsExpandable(row) &&
-                         Contains(ChevronHitRect(RowRect(row)), x, y));
-                } else {
-                    interactive = Contains(ControlHitRect(ChoiceRect(row)), x,
-                                           y);
-                }
-            }
-            SetCursor(LoadCursorW(
-                nullptr,
-                (interactive || close || over_scroll) ? IDC_HAND : IDC_ARROW));
+            OnPointerMove(GET_X_LPARAM(lparam) / scale_,
+                          GET_Y_LPARAM(lparam) / scale_,
+                          ui::PointerSource::Mouse);
             return 0;
         }
 
@@ -1816,20 +1842,13 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
 
-        case WM_LBUTTONUP:
-            if (SyntheticMouseSuppressed()) return 0;
-            if (scroll_dragging_) {
-                scroll_dragging_ = false;
-                if (GetCapture() == hwnd) ReleaseCapture();
-                InvalidateRect(hwnd, nullptr, FALSE);
-                return 0;
-            }
-            if (dragging_) {
-                dragging_ = false;
-                if (GetCapture() == hwnd) ReleaseCapture();
-                return 0;
-            }
-            break;
+        case WM_LBUTTONUP: {
+            if (ui::IsPromotedPointerMouse()) return 0;
+            OnPointerUp(GET_X_LPARAM(lparam) / scale_,
+                        GET_Y_LPARAM(lparam) / scale_,
+                        ui::PointerSource::Mouse);
+            return 0;
+        }
 
         case WM_CAPTURECHANGED:
             if (scroll_dragging_) {
@@ -1843,6 +1862,9 @@ LRESULT SettingsWindow::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
                 close_hover_ = false;
                 InvalidateRect(hwnd, nullptr, FALSE);
             }
+            pointer_target_ = PointerTarget::None;
+            pointer_pan_candidate_ = false;
+            pointer_panning_ = false;
             return 0;
 
         case WM_MOUSEWHEEL: {

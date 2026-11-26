@@ -118,13 +118,6 @@ private:
     void ApplyElevatedMount(const std::wstring& volume_path, wchar_t letter);
     void ApplyElevatedUnmount(wchar_t letter);
 
-    // 触摸输入：触点按下期间由视图处理滚动，并屏蔽 Windows 为兼容而
-    // 合成的鼠标消息，避免同一个手势既滚动又拖动窗口。
-    bool SyntheticMouseSuppressed() const {
-        return touch_active_ ||
-               static_cast<DWORD>(GetTickCount() - touch_last_tick_) < 300;
-    }
-
     // 托盘 / 隐藏
     void AddTrayIcon();
     void RemoveTrayIcon();
@@ -231,9 +224,8 @@ private:
     bool tracking_leave_ = false;
     bool empty_hide_armed_ = false;
     // 触摸屏：只跟踪第一个触点，其余触点在抬手前忽略。
-    bool touch_active_ = false;
+    bool touch_contact_active_ = false;
     DWORD touch_contact_id_ = 0;
-    DWORD touch_last_tick_ = 0;
     // 启动后的第一次自动更新判断是否已经执行过（设置变更时会重置）。
     bool update_startup_done_ = false;
     // 托盘通知可能重复投递（WM_RBUTTONUP 与 WM_CONTEXTMENU），
