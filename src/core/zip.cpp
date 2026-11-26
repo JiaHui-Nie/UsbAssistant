@@ -438,7 +438,7 @@ bool IsSafeEntryName(const std::wstring& name) {
 }  // namespace
 
 bool ExtractAll(const std::wstring& zip_path, const std::wstring& dest_dir,
-                std::wstring* error) {
+                std::wstring* error, const ProgressFn& progress) {
     const auto fail = [error](const wchar_t* message) {
         if (error) *error = message;
         return false;
@@ -519,6 +519,12 @@ bool ExtractAll(const std::wstring& zip_path, const std::wstring& dest_dir,
 
     if (!EnsureDirectory(dest_dir)) return fail(L"无法创建解压目录");
 
+    // 进度按解压后的字节数统计：目录条目通常为 0，不影响总量。
+    std::uint64_t total_bytes = 0;
+    for (const Entry& entry : entries) total_bytes += entry.uncompressed_size;
+    std::uint64_t done_bytes = 0;
+    if (progress) progress(0, total_bytes);
+
     for (const Entry& entry : entries) {
         if (entry.name.empty()) continue;
         if (entry.name.back() == L'/' || entry.name.back() == L'\\') {
@@ -563,6 +569,8 @@ bool ExtractAll(const std::wstring& zip_path, const std::wstring& dest_dir,
             return fail(L"无法创建解压目录");
         }
         if (!WriteBytes(target, content)) return fail(L"无法写入解压文件");
+        done_bytes += entry.uncompressed_size;
+        if (progress) progress(done_bytes, total_bytes);
         USB_LOG_INFO(L"zip", L"解压：%s（%llu 字节）", target.c_str(),
                      static_cast<unsigned long long>(content.size()));
     }

@@ -28,17 +28,28 @@ public:
     };
 
     // 启动方式：
-    //   Visible   手动检查，窗口始终显示；
-    //   AutoCheck 自动检查，只有发现新版本才显示窗口；
-    //   Silent    静默更新，完全不显示窗口，发现新版本直接完成替换。
-    enum class UpdateMode { Visible, AutoCheck, Silent };
+    //   Visible           手动检查，窗口始终显示；
+    //   AutoCheck         自动检查，只有发现新版本才显示窗口；
+    //   Silent            静默更新，完全不显示窗口，发现新版本直接完成替换；
+    //   LocalInstall      从命令行指定的本地更新包安装，显示窗口与各阶段进度；
+    //   LocalInstallSilent 同上，但不显示窗口（--install 与 --silent 同时给出）。
+    // 本地安装不联网、不比较版本。
+    enum class UpdateMode {
+        Visible,
+        AutoCheck,
+        Silent,
+        LocalInstall,
+        LocalInstallSilent
+    };
 
     UpdaterApp();
     ~UpdaterApp();
     UpdaterApp(const UpdaterApp&) = delete;
     UpdaterApp& operator=(const UpdaterApp&) = delete;
 
-    InitResult Initialize(HINSTANCE instance, UpdateMode mode);
+    // local_package 只在 LocalInstall 模式下使用。
+    InitResult Initialize(HINSTANCE instance, UpdateMode mode,
+                          const std::wstring& local_package = L"");
     int Run();
 
 private:
@@ -48,6 +59,8 @@ private:
                           LPARAM lparam);
 
     void StartCheck();
+    // 本地更新包：跳过检查与下载，直接进入解压与替换。
+    void StartLocalInstall();
     // 收到重复启动转交：前置窗口，并在空闲时重新发起检查。
     void HandleWakeRequest(bool autocheck);
     // 已有实例存在时，把本次请求转交给它的窗口。
@@ -58,11 +71,21 @@ private:
                            const ReleaseAsset& asset);
     void StartInstall();
     void RunInstall(ReleaseAsset asset);
+    // 解压本地更新包并完成替换；下载路径与 --install 共用这一段。
+    void RunInstallFromZip(const std::wstring& zip_path,
+                           const std::wstring& temp_root);
     void OnWindowClosed();
 
     void PostInstallStage(int kind, std::wstring text);
 
-    bool IsSilent() const { return mode_ == UpdateMode::Silent; }
+    bool IsSilent() const {
+        return mode_ == UpdateMode::Silent ||
+               mode_ == UpdateMode::LocalInstallSilent;
+    }
+    bool IsLocalInstall() const {
+        return mode_ == UpdateMode::LocalInstall ||
+               mode_ == UpdateMode::LocalInstallSilent;
+    }
     // 静默模式没有窗口：这些封装在无界面时直接忽略。
     void ShowStage(ui::UpdaterStage stage, std::wstring text);
     void ShowProgress(float fraction);
@@ -70,7 +93,10 @@ private:
     void Finish();
 
     UpdateMode mode_ = UpdateMode::Visible;
+    std::wstring local_package_;
     bool autocheck_ = false;
+    // 本地安装失败时用非 0 退出码，方便命令行判断结果。
+    int exit_code_ = 0;
     bool com_initialized_ = false;
     // 单实例互斥体：句柄存活即代表本进程是唯一升级器实例。
     HANDLE instance_mutex_ = nullptr;

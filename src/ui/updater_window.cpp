@@ -132,7 +132,8 @@ void UpdaterWindow::Show() {
 void UpdaterWindow::SetStage(UpdaterStage stage, std::wstring text) {
     stage_ = stage;
     text_ = std::move(text);
-    if (stage_ != UpdaterStage::Downloading) progress_ = -1.0f;
+    // 阶段切换后进度重新开始；需要显示进度的调用方随后再 SetProgress。
+    progress_ = -1.0f;
     UpdateAnimationTimer();
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -192,7 +193,8 @@ bool UpdaterWindow::HasSecondary() const {
 }
 
 bool UpdaterWindow::ShowsProgress() const {
-    return stage_ == UpdaterStage::Downloading;
+    return stage_ == UpdaterStage::Downloading ||
+           stage_ == UpdaterStage::Updating;
 }
 
 std::wstring UpdaterWindow::PrimaryText() const {
@@ -315,7 +317,13 @@ void UpdaterWindow::PaintButton(ID2D1RenderTarget* target,
 void UpdaterWindow::PaintProgress(ID2D1RenderTarget* target,
                                   ID2D1SolidColorBrush* brush) {
     const D2D1_RECT_F body = BodyRect();
-    const float center = (body.top + body.bottom) * 0.5f;
+    // 下载、解压与替换阶段的说明文字放在进度条上方。
+    if (!text_.empty()) {
+        DrawText(target, brush, text_, fonts_->dialog_message,
+                 Rect(28.0f, body.top, kWidth - 28.0f, body.top + 30.0f),
+                 palette_.text_primary);
+    }
+    const float center = (body.top + body.bottom) * 0.5f + 12.0f;
     const D2D1_RECT_F track =
         Rect(36.0f, center - kProgressHeight * 0.5f, kWidth - 36.0f,
              center + kProgressHeight * 0.5f);

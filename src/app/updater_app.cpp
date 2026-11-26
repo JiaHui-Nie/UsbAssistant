@@ -41,7 +41,7 @@ struct ProgressPayload {
     bool total_known = false;
 };
 
-enum class InstallStage { Updating, Failed, Done };
+enum class InstallStage { Extracting, Updating, Failed, Done };
 
 struct StagePayload {
     InstallStage kind = InstallStage::Updating;
@@ -168,32 +168,50 @@ UpdaterApp::~UpdaterApp() {
     }
 }
 
-UpdaterApp::InitResult UpdaterApp::Initialize(HINSTANCE instance,
-                                              UpdateMode mode) {
+UpdaterApp::InitResult UpdaterApp::Initialize(
+    HINSTANCE instance, UpdateMode mode, const std::wstring& local_package) {
     mode_ = mode;
-    autocheck_ = mode != UpdateMode::Visible;
+    local_package_ = local_package;
+    autocheck_ = mode == UpdateMode::Silent || mode == UpdateMode::AutoCheck;
 
     // 单实例：重复启动不再创建窗口，把请求转交给已有实例后静默退出。
     // 互斥体只负责覆盖“两个进程同时启动”的竞争；具体请求仍通过窗口
     // 消息转交，避免两个进程同时下载/安装更新包。
     // 静默模式没有窗口可转交，重复启动直接退出。
-    instance_mutex_ = CreateMutexW(nullptr, FALSE, kUpdaterMutexName);
-    const DWORD mutex_error = GetLastError();
-    if (!instance_mutex_) {
-        if (mutex_error == ERROR_ACCESS_DENIED) {
-            // 已有实例权限更高（例如以管理员身份运行），打不开互斥体。
-            if (IsSilent()) return InitResult::AlreadyRunning;
-            WakeExistingInstance(autocheck_);
+    // 本地安装无法把包路径转交出去，改为等待现有升级器结束后再执行。
+    bool logged_wait = false;
+    for (;;) {
+        instance_mutex_ = CreateMutexW(nullptr, FALSE, kUpdaterMutexName);
+        const DWORD mutex_error = GetLastError();
+        if (instance_mutex_ && mutex_error != ERROR_ALREADY_EXISTS) break;
+
+        if (!instance_mutex_ && mutex_error != ERROR_ACCESS_DENIED) {
+            // 既不是“已存在”，也不是权限不足：无法再判断，按无实例继续。
+            USB_LOG_WARN(L"update", L"创建单实例互斥体失败：%lu",
+                         mutex_error);
+            break;
+        }
+
+        if (!IsLocalInstall()) {
+            if (IsSilent()) {
+                USB_LOG_INFO(L"update",
+                             L"已有升级器在运行，本次静默更新请求退出");
+            } else {
+                WakeExistingInstance(autocheck_);
+            }
             return InitResult::AlreadyRunning;
         }
-        USB_LOG_WARN(L"update", L"创建单实例互斥体失败：%lu", mutex_error);
-    } else if (mutex_error == ERROR_ALREADY_EXISTS) {
-        if (IsSilent()) {
-            USB_LOG_INFO(L"update", L"已有升级器在运行，本次静默更新请求退出");
-            return InitResult::AlreadyRunning;
+
+        // 已有实例权限更高时打不开互斥体，但同样说明它在运行。
+        if (!logged_wait) {
+            USB_LOG_INFO(L"update", L"已有升级器在运行，等待其结束后再安装");
+            logged_wait = true;
         }
-        WakeExistingInstance(autocheck_);
-        return InitResult::AlreadyRunning;
+        if (instance_mutex_) {
+            CloseHandle(instance_mutex_);
+            instance_mutex_ = nullptr;
+        }
+        Sleep(200);
     }
 
     const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -256,11 +274,20 @@ UpdaterApp::InitResult UpdaterApp::Initialize(HINSTANCE instance,
         }
         window_.SetWakeHandler(
             [this](bool autocheck) { HandleWakeRequest(autocheck); });
-        window_.SetStage(ui::UpdaterStage::Checking, L"正在检查更新中……");
+        if (IsLocalInstall()) {
+            window_.SetStage(ui::UpdaterStage::Updating, L"正在准备更新……");
+        } else {
+            window_.SetStage(ui::UpdaterStage::Checking,
+                             L"正在检查更新中……");
+        }
     }
 
     worker_.Start();
-    StartCheck();
+    if (IsLocalInstall()) {
+        StartLocalInstall();
+    } else {
+        StartCheck();
+    }
     return InitResult::Ok;
 }
 
@@ -270,7 +297,7 @@ int UpdaterApp::Run() {
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
-    return 0;
+    return exit_code_;
 }
 
 void UpdaterApp::OnWindowClosed() { cancel_.store(true); }
@@ -383,6 +410,12 @@ void UpdaterApp::HandleWakeRequest(bool autocheck) {
         USB_LOG_INFO(L"update", L"静默更新进行中，忽略重复启动请求");
         return;
     }
+    // 本地安装不联网：重复启动只前置已有窗口，绝不转入联网检查。
+    if (IsLocalInstall()) {
+        USB_LOG_INFO(L"update", L"本地安装进行中，仅前置窗口");
+        window_.Show();
+        return;
+    }
     // 已有实例被显式唤起：先显示并前置。即使本次是 --autocheck 请求，
     // 既然要唤醒已有窗口，就按可见模式处理，避免检查完又自动关闭。
     window_.Show();
@@ -423,6 +456,25 @@ void UpdaterApp::WakeExistingInstance(bool autocheck) {
     USB_LOG_WARN(L"update", L"检测到现有升级器，但请求转交失败");
 }
 
+void UpdaterApp::StartLocalInstall() {
+    if (installing_) return;
+    installing_ = true;
+    cancel_.store(false);
+    USB_LOG_INFO(L"update", L"本地安装：包=%s", local_package_.c_str());
+    ShowStage(ui::UpdaterStage::Updating, L"正在解压更新包……");
+    ShowProgress(-1.0f);
+    const std::wstring zip_path = local_package_;
+    worker_.Post([this, zip_path]() {
+        const std::wstring temp_root = MakeTempDirectory();
+        if (temp_root.empty()) {
+            PostInstallStage(static_cast<int>(InstallStage::Failed),
+                             L"更新失败：无法创建临时目录。");
+            return;
+        }
+        RunInstallFromZip(zip_path, temp_root);
+    });
+}
+
 void UpdaterApp::StartInstall() {
     if (installing_) return;
     installing_ = true;
@@ -441,7 +493,6 @@ void UpdaterApp::RunInstall(ReleaseAsset asset) {
         return;
     }
     const std::wstring zip_path = temp_root + L"\\update.zip";
-    const std::wstring extract_dir = temp_root + L"\\extract";
 
     std::wstring error;
     const bool downloaded = http::Download(
@@ -467,7 +518,27 @@ void UpdaterApp::RunInstall(ReleaseAsset asset) {
         return;
     }
 
-    if (!zip::ExtractAll(zip_path, extract_dir, &error)) {
+    RunInstallFromZip(zip_path, temp_root);
+}
+
+void UpdaterApp::RunInstallFromZip(const std::wstring& zip_path,
+                                   const std::wstring& temp_root) {
+    const std::wstring extract_dir = temp_root + L"\\extract";
+
+    PostInstallStage(static_cast<int>(InstallStage::Extracting), L"");
+    std::wstring error;
+    // 解压进度按解压后的字节数统计，与下载进度共用同一条进度条。
+    const bool extracted = zip::ExtractAll(
+        zip_path, extract_dir, &error,
+        [this](std::uint64_t done, std::uint64_t total) {
+            auto payload = std::make_unique<ProgressPayload>();
+            payload->received = done;
+            payload->total = total;
+            payload->total_known = total > 0;
+            PostPayload(post_target_, kMessageDownloadProgress,
+                        std::move(payload));
+        });
+    if (!extracted) {
         USB_LOG_WARN(L"update", L"解压失败：%s", error.c_str());
         RemoveTree(temp_root);
         PostInstallStage(static_cast<int>(InstallStage::Failed),
@@ -494,7 +565,7 @@ void UpdaterApp::RunInstall(ReleaseAsset asset) {
     const bool was_hidden = was_running && !IsWindowVisible(running.window);
     const wchar_t* relaunch_arguments = was_hidden ? L"--autostart" : L"";
     USB_LOG_INFO(L"update", L"更新前主程序正在运行：%d 可见：%d",
-                 was_running ? 1 : 0, was_hidden ? 0 : 1);
+                 was_running ? 1 : 0, was_running && !was_hidden ? 1 : 0);
     if (was_running) {
         const StopAppResult stop = RequestAppExit(running, 5000, &error);
         if (stop == StopAppResult::Failed) {
@@ -609,12 +680,23 @@ LRESULT UpdaterApp::HandleMessage(HWND hwnd, UINT message, WPARAM wparam,
             auto payload = TakePayload<StagePayload>(lparam);
             if (!payload) return 0;
             switch (payload->kind) {
+                case InstallStage::Extracting:
+                    ShowStage(ui::UpdaterStage::Updating,
+                              L"正在解压更新包……");
+                    ShowProgress(-1.0f);
+                    break;
                 case InstallStage::Updating:
-                    ShowStage(ui::UpdaterStage::Updating, L"正在更新……");
+                    ShowStage(ui::UpdaterStage::Updating,
+                              payload->text.empty() ? L"正在更新……"
+                                                    : payload->text);
+                    ShowProgress(-1.0f);
                     break;
                 case InstallStage::Failed:
                     // 失败后允许重复启动请求重新检查/下载。
                     installing_ = false;
+                    if (IsLocalInstall()) {
+                        exit_code_ = 1;
+                    }
                     ShowStage(ui::UpdaterStage::Failed, payload->text);
                     if (IsSilent()) PostQuitMessage(0);
                     break;
